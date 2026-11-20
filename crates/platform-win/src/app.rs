@@ -201,6 +201,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             LRESULT(0)
         }
+        windows::Win32::UI::WindowsAndMessaging::WM_CLOSE => {
+            // taskkill（/F なし）やインストーラ等からの終了要求：録画を確定してから閉じる。
+            dispatch(UiEvent::Shutdown);
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
+            LRESULT(0)
+        }
         WM_DESTROY => {
             PostQuitMessage(0);
             LRESULT(0)
@@ -301,6 +307,14 @@ pub fn run(app: Box<dyn App>) {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        // どの経路でループを抜けても、録画中なら必ず確定してから終了する。
+        MAIN.with(|m| {
+            if let Some(main) = m.borrow_mut().as_mut() {
+                if let Some(summary) = main.plat.stop_recording() {
+                    meetrec_core::info!("終了時に録画を確定しました: {summary:?}");
+                }
+            }
+        });
         // トレイアイコン等を片付けてから終了する。
         MAIN.with(|m| m.borrow_mut().take());
     }

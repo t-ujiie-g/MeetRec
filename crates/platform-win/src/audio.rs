@@ -181,7 +181,7 @@ struct BlobVariant {
     data: *const u8,
 }
 
-unsafe fn activate_loopback(pid: u32) -> WinResult<IAudioClient> {
+unsafe fn activate_loopback(pid: u32, stop: &AtomicBool) -> WinResult<IAudioClient> {
     let params = AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
@@ -205,13 +205,19 @@ unsafe fn activate_loopback(pid: u32) -> WinResult<IAudioClient> {
         Some(&variant as *const BlobVariant as *const PROPVARIANT),
         &handler,
     )?;
-    let guard = done.0.lock().unwrap();
-    let (guard, _) = done
-        .1
-        .wait_timeout_while(guard, Duration::from_secs(5), |finished| !*finished)
-        .unwrap();
-    if !*guard {
-        return Err(E_FAIL.into());
+    // 停止要求にすぐ応じられるよう、短い間隔で区切って最大 5 秒待つ。
+    let mut guard = done.0.lock().unwrap();
+    let mut waited = 0;
+    while !*guard {
+        if waited >= 50 || stop.load(Ordering::SeqCst) {
+            return Err(E_FAIL.into());
+        }
+        guard = done
+            .1
+            .wait_timeout(guard, Duration::from_millis(100))
+            .unwrap()
+            .0;
+        waited += 1;
     }
     drop(guard);
     let mut hr = HRESULT(0);
@@ -242,26 +248,43 @@ pub fn run_loopback(holder: Arc<Holder>, stop: Arc<AtomicBool>, pid: u32) {
         wBitsPerSample: format.bits,
         cbSize: 0,
     };
-    let result = unsafe {
-        (|| -> WinResult<()> {
-            let client = activate_loopback(pid)?;
-            client.Initialize(
-                AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_LOOPBACK
-                    | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-                BUFFER_HNS,
-                0,
-                &wave,
-                None,
-            )?;
-            meetrec_core::info!("相手音声のキャプチャ開始（プロセスループバック pid={pid}）");
-            capture_loop(&client, format, SRC_APP, &holder, &stop, || true)
-        })()
-    };
-    if let Err(e) = result {
-        // 未対応の OS などでは相手音声なしで続行する。
-        meetrec_core::warn!("相手音声（プロセスループバック）を録音できません: {e}");
+    // デバイス無効化などで止まっても、録画が続く限り開き直す（マイクと同じ方針）。
+    let mut failures = 0u32;
+    while !stop.load(Ordering::SeqCst) {
+        let result = unsafe {
+            (|| -> WinResult<()> {
+                let client = activate_loopback(pid, &stop)?;
+                client.Initialize(
+                    AUDCLNT_SHAREMODE_SHARED,
+                    AUDCLNT_STREAMFLAGS_LOOPBACK
+                        | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+                    BUFFER_HNS,
+                    0,
+                    &wave,
+                    None,
+                )?;
+                meetrec_core::info!("相手音声のキャプチャ開始（プロセスループバック pid={pid}）");
+                capture_loop(&client, format, SRC_APP, &holder, &stop, || true)
+            })()
+        };
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        if let Err(e) = result {
+            // 未対応の OS などでは相手音声なしで続行する。ログは最初と、以後は間引いて出す。
+            if failures.is_multiple_of(20) {
+                meetrec_core::warn!("相手音声（プロセスループバック）を録音できません: {e}");
+            }
+            failures += 1;
+        }
+        // 3 秒おいて再試行（停止要求には 100ms 以内に応じる）。
+        for _ in 0..30 {
+            if stop.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 }
 

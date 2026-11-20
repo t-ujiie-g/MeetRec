@@ -166,6 +166,7 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
     let started = Instant::now();
     let mut got_frame = false;
     let mut errors = 0u32;
+    let mut warned = false;
     loop {
         let frame = {
             let mut queue = shared.queue.lock();
@@ -202,6 +203,7 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
             }
         }
 
+        let had_frame = frame.is_some();
         let result = if let Some(frame) = frame {
             let converted = converter.convert(&frame.texture, frame.content);
             let pts = frame.pts_ns;
@@ -221,10 +223,17 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
             Ok(())
         };
         match result.and_then(|_| encoder.pump(&mut sink)) {
-            Ok(()) => errors = 0,
+            // フレームを実際に処理できたときだけ失敗回数を戻す（フレームのない起床で
+            // 戻すと、壊れたエンコーダをいつまでも見限れない）。
+            Ok(()) => {
+                if had_frame {
+                    errors = 0;
+                }
+            }
             Err(e) => {
                 errors += 1;
-                if errors == 1 {
+                if !warned {
+                    warned = true;
                     meetrec_core::warn!("映像の変換/エンコードに失敗: {e}");
                 }
                 if errors >= MAX_ERRORS {
