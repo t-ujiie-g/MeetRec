@@ -2,7 +2,7 @@
 //!
 //! 開始：会議アプリがマイク使用中 かつ 録画対象ウィンドウ（start_score 以上）が存在、
 //!       が `start_hold` 継続。micless_start_score 以上のウィンドウがあればマイク不問。
-//! 終了：(a) keep_score 以上のウィンドウが `end_grace` の間ひとつもない、または
+//! 終了：(a) keep_score 以上のウィンドウがなく、マイクも未使用の状態が `end_grace` 継続、または
 //!       (b) マイク未使用 かつ strong_score 以上のウィンドウなし が `mic_release_grace` 継続。
 //!       一時的な切断・再接続では (a)(b) のタイマーがリセットされるので分断しない。
 
@@ -134,6 +134,9 @@ impl Detector {
                 let strong = max.is_some_and(|s| s >= rule.strong_score);
                 let mic = obs.mic_root(app).is_some();
 
+                // マイクを使っている間は、既知のウィンドウが見当たらなくても会議中とみなす
+                // （自分の画面共有などで、定数表にないウィンドウ構成に変わる場合の保険）。
+                let present = present || mic;
                 let gone_since = if present {
                     None
                 } else {
@@ -383,6 +386,34 @@ mod tests {
             }
         }
         assert_eq!(ended, Some((5, DetectEvent::Ended { app: 0 })));
+    }
+
+    #[test]
+    fn unknown_windows_during_share_do_not_end_meeting_while_mic_is_used() {
+        let mut h = H::new();
+        h.step(&zoom_mic(), &[zoom_meeting()]);
+        h.step(&zoom_mic(), &[zoom_meeting()]);
+        // 自分の画面共有：会議ウィンドウが消え、定数表にないウィンドウだけになった。
+        let unknown = win(
+            8,
+            proc_(7, "Zoom.exe", None),
+            "",
+            "SomeNewShareWndClass",
+            400,
+            80,
+        );
+        for _ in 0..60 {
+            assert_eq!(h.step(&zoom_mic(), std::slice::from_ref(&unknown)), None);
+        }
+        // 共有をやめて会議ウィンドウが戻る → 同じ会議のまま。
+        assert_eq!(h.step(&zoom_mic(), &[zoom_meeting()]), None);
+        assert_eq!(h.det.active_app(), Some(0));
+        // 退出（ウィンドウなし・マイク解放）で終了。
+        let mut n = 0;
+        while h.step(&[], &[zoom_home()]).is_none() {
+            n += 1;
+            assert!(n < 10);
+        }
     }
 
     #[test]
