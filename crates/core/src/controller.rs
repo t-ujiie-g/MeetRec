@@ -24,6 +24,8 @@ const DISK_CHECK_NS: u64 = 10 * NS;
 const METRICS_REC_NS: u64 = 30 * NS;
 const METRICS_IDLE_NS: u64 = 60 * NS;
 const CLEANUP_NS: u64 = 6 * 3600 * NS;
+/// マイク未使用でも会議ウィンドウを探しに行く間隔（待機中の負荷を抑えるため長め）。
+const MICLESS_SCAN_NS: u64 = 10 * NS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Decision {
@@ -69,6 +71,7 @@ pub struct Controller {
     last_metrics_ns: u64,
     last_disk_ns: u64,
     last_cleanup_ns: u64,
+    last_window_scan_ns: u64,
     last_tray: Option<TrayModel>,
     last_obs: Observation,
     config_error: Option<String>,
@@ -90,6 +93,7 @@ impl Controller {
             last_metrics_ns: 0,
             last_disk_ns: 0,
             last_cleanup_ns: 0,
+            last_window_scan_ns: 0,
             last_tray: None,
             last_obs: Observation::default(),
             config_error,
@@ -194,11 +198,16 @@ impl Controller {
         let mic = p.mic_users();
         // ウィンドウ一覧は必要なときだけ取る（待機中の負荷を最小にする）。
         let mic_only = self.rules.observe(&mic, &[]);
+        let now = p.now_ns();
+        let periodic = self.rules.has_micless_start()
+            && now.saturating_sub(self.last_window_scan_ns) >= MICLESS_SCAN_NS;
         let need = force_windows
+            || periodic
             || !mic_only.mic_apps.is_empty()
             || self.detector.wants_windows()
             || self.rec.is_some();
         let obs = if need {
+            self.last_window_scan_ns = now;
             self.rules.observe(&mic, &p.windows())
         } else {
             mic_only
@@ -1063,13 +1072,33 @@ mod tests {
     }
 
     #[test]
-    fn idle_does_not_enumerate_windows() {
+    fn idle_rarely_enumerates_windows() {
         let mut h = H::new("ctl-idle", Mode::Ask);
-        h.p.windows = vec![meeting_win()];
-        h.ticks(20);
-        assert_eq!(h.p.window_calls, 0);
+        let home = win(
+            2,
+            zoom(),
+            "Zoom Workplace",
+            "ZPPTMainFrmWndClassEx",
+            900,
+            600,
+        );
+        h.p.windows = vec![home];
+        h.ticks(50);
+        // 100 秒で 10 回程度（マイク未使用時の保険の走査）だけ。
+        assert!(h.p.window_calls <= 11, "{}", h.p.window_calls);
         assert_eq!(h.p.tray.len(), 1);
         assert_eq!(h.p.tray[0].status, text::STATUS_IDLE);
+        assert_eq!(h.count("show_prompt"), 0);
+    }
+
+    #[test]
+    fn muted_join_is_detected_by_window_scan() {
+        let mut h = H::new("ctl-micless", Mode::Ask);
+        h.p.windows = vec![meeting_win()]; // マイクは誰も使っていない
+        h.ticks(8);
+        assert_eq!(h.count("show_prompt"), 1);
+        h.ev(UiEvent::Prompt(PromptAnswer::Record { always: false }));
+        assert_eq!(h.p.recording.as_ref().unwrap().root_pid, 7);
     }
 
     #[test]

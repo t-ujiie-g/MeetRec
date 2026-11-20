@@ -42,6 +42,10 @@ pub struct AppRule {
     pub strong_score: i32,
     /// この点以上のウィンドウが 1 つもなくなったら（猶予後）終了。
     pub keep_score: i32,
+    /// この点以上の録画対象ウィンドウがあれば、マイク未使用でも会議開始とみなす（0 = 無効）。
+    /// ミュートで参加するとアプリがマイクを開かない場合の保険。会議中にしか現れない
+    /// ウィンドウを確実に見分けられるアプリでのみ有効にする。
+    pub micless_start_score: i32,
     pub windows: Vec<WindowRule>,
     /// 会議タイトル抽出時にウィンドウタイトルから取り除く文字列。
     pub title_strip: Vec<String>,
@@ -65,6 +69,7 @@ pub fn builtin_rules() -> Vec<AppRule> {
             start_score: 90,
             strong_score: 60,
             keep_score: 30,
+            micless_start_score: 100,
             windows: vec![
                 // 会議メインウィンドウ（英語/日本語 UI）。
                 WindowRule {
@@ -140,6 +145,7 @@ pub fn builtin_rules() -> Vec<AppRule> {
             start_score: 40,
             strong_score: 90,
             keep_score: 40,
+            micless_start_score: 0,
             windows: vec![
                 WindowRule {
                     score: 100,
@@ -261,6 +267,11 @@ fn contains_ci(haystack_lower: &str, needle: &str) -> bool {
 }
 
 impl Rules {
+    /// マイク未使用でも開始とみなす規則を持つアプリがあるか（定期的なウィンドウ確認が必要か）。
+    pub fn has_micless_start(&self) -> bool {
+        self.apps.iter().any(|a| a.micless_start_score > 0)
+    }
+
     /// 組み込み表に設定の `[[app]]` を重ねる（同じ id は差し替え、新しい id は追加）。
     pub fn new(overrides: &[AppRule]) -> Rules {
         let mut apps = builtin_rules();

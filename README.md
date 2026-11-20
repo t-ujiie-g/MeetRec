@@ -1,0 +1,193 @@
+# MeetRec — 超軽量 Web 会議自動録画アプリ
+
+Zoom / Microsoft Teams（新 Teams）のデスクトップアプリで会議が始まると自動で検知し、
+**会議ウィンドウだけ**をローカルに録画する常駐アプリです（macOS 15 以降 / Windows 10 22H2 以降・Windows 11）。
+
+- **軽い**：メニューバー / システムトレイに常駐するだけ。WebView や Electron は使わず、映像は OS のハードウェアエンコーダで圧縮します。
+- **覚える操作ゼロ**：会議に入ると「録画しますか？」と聞かれるだけ。「常に自動録画」にすれば何もしなくて構いません。
+- **録画を失わない**：約 2 秒ごとにディスクへ確定する形式（fragmented MP4）で書くため、強制終了や電源断でも直前まで再生できます。
+- **ネットワーク通信なし**：自動更新・テレメトリ・クラウド連携は一切ありません。文字起こしや要約の機能もありません。
+
+> **状態**：実装は完了していますが、作者の環境（Linux コンテナ）では macOS / Windows の画面収録を実行できないため、
+> 実機での動作は未確認です。[docs/manual-test.md](docs/manual-test.md) の手順で確認し、うまく動かない場合は
+> メニューの「診断ログを保存」で出力されるファイルを添えて報告してください。未検証の仮定は [PROGRESS.md](PROGRESS.md) に列挙しています。
+
+## インストール
+
+GitHub Actions の成果物（Actions → 最新の CI 実行 → Artifacts）からダウンロードします。
+
+### macOS
+
+1. `MeetRec-macos` をダウンロードして zip を展開し、`MeetRec.app` を「アプリケーション」フォルダへ移動します。
+2. 初回は Finder で `MeetRec.app` を右クリック →「開く」を選びます。
+   - 公証（notarization）していない ad-hoc 署名のため、ダブルクリックでは Gatekeeper に止められます。
+   - 「開く」が出ない場合は、システム設定 → プライバシーとセキュリティ の下部にある「このまま開く」を押してください。
+   - ターミナルから `xattr -dr com.apple.quarantine /Applications/MeetRec.app` を実行しても構いません。
+3. メニューバーに MeetRec のアイコン（丸）が出れば起動しています。Dock には表示されません。
+
+### Windows
+
+1. `MeetRec-windows` をダウンロードして `MeetRec.exe` を好きな場所（例：`%LOCALAPPDATA%\MeetRec\`）に置きます。
+2. ダブルクリックで起動します。未署名のため SmartScreen が出たら「詳細情報」→「実行」を選びます。
+3. タスクバー右端の通知領域（隠れている場合は「^」の中）に MeetRec のアイコンが出れば起動しています。
+   常に表示したい場合は、設定 → 個人用設定 → タスクバー →「その他のシステム トレイ アイコン」で MeetRec をオンにします。
+
+インストーラはありません。管理者権限も不要です。アンインストールは、メニューの「ログイン時に起動」をオフにして終了し、ファイルを削除するだけです。
+
+## 権限の設定
+
+### macOS
+
+初回起動時に 2 つの権限を案内します。許可しないと録画できません。
+
+| 権限 | 用途 | 設定場所 |
+|---|---|---|
+| 画面収録（画面とシステムオーディオの録音） | 会議ウィンドウの映像と、会議アプリが出す音声の取得。ウィンドウ名の取得にも必要です | システム設定 → プライバシーとセキュリティ → 画面とシステムオーディオの録音 |
+| マイク | 自分の声の録音 | システム設定 → プライバシーとセキュリティ → マイク |
+| 通知（任意） | 「保存しました」などの通知 | システム設定 → 通知 → MeetRec |
+
+- 画面収録の権限を付けたあとは **MeetRec を一度終了して起動し直してください**（macOS の仕様）。
+- macOS は定期的に「MeetRec が画面を収録しています。引き続き許可しますか？」と確認することがあります。「許可を続ける」を選んでください。
+- ad-hoc 署名のビルドは、**新しいビルドに入れ替えるたびに権限の付け直しが必要**になることがあります
+  （設定の一覧から MeetRec を「−」で削除してから再度許可すると確実です）。
+
+### Windows
+
+事前の許可は不要です。ただし、設定 → プライバシーとセキュリティ → マイク で
+「デスクトップ アプリにマイクへのアクセスを許可する」がオフだと自分の声が録れません。
+
+## 使い方
+
+1. いつもどおり Zoom / Teams で会議に参加します。
+2. 2〜4 秒ほどで画面の隅に「会議を検出しました。録画しますか？」と表示されます。
+   - **録画する**：録画を開始します。アイコンが赤丸に変わります。
+   - **今回はしない**：この会議は録画しません（同じ会議中は再度聞きません）。
+   - **次回から確認せず録画**：チェックを付けて「録画する」を押すと、以後は確認なしで自動録画します。
+3. 会議が終わると自動で録画を止め、「保存しました」と通知します。通知をクリックすると保存フォルダが開きます。
+
+### メニュー
+
+アイコンをクリックするとメニューが開きます。
+
+| 項目 | 内容 |
+|---|---|
+| 待機中 / 録画中 00:12:34 | 現在の状態 |
+| 今すぐ録画 / 録画を停止 | 手動で開始・停止します（検出がうまくいかないときの保険） |
+| 録画フォルダを開く | 保存先を開きます |
+| 会議を検出したとき | 「確認する」（既定）/「常に自動録画」/「オフ」 |
+| ログイン時に起動 | 初回起動時に自動でオンになります |
+| 診断ログを保存 | 現在のプロセス・ウィンドウ・マイク使用状況・自己計測を書き出します（不具合報告用） |
+| MeetRec を終了 | 録画中なら確定してから終了します |
+
+### 録画されるもの
+
+- **映像**：会議ウィンドウの中身だけ。他のアプリ・通知・デスクトップ・別ディスプレイは映りません。
+  会議ウィンドウが他のウィンドウに隠れていても、会議ウィンドウの中身だけが録画されます。
+  最小化している間は最後の映像のまま止まり、音声は録り続けます。
+- **音声**：会議アプリが出す音（相手の声）と自分のマイクを 1 つの音声トラックにミックスします。
+  他のアプリの音楽や通知音は入りません。
+- 会議アプリ側がキャプチャを禁止している場合は、回避せず音声のみを録音して通知します。
+- 画質の既定値：10fps、長辺 1920px 以下、映像約 1.5Mbps、音声 AAC 96kbps（1 時間で約 700MB）。
+
+### 保存先とファイル名
+
+| OS | 保存先 |
+|---|---|
+| macOS | `~/Movies/MeetRec`（ムービー → MeetRec） |
+| Windows | `%USERPROFILE%\Videos\MeetRec`（ビデオ → MeetRec） |
+
+ファイル名は `2026-11-20_1430_Zoom.mp4` の形式です（Teams など会議名が取れる場合は `2026-11-20_1430_Teams_週次定例.mp4`）。
+H.264 + AAC の MP4 で、QuickTime Player、Windows の「メディア プレーヤー」、VLC、ブラウザなどでそのまま再生できます。
+
+### 異常終了したとき
+
+録画中に MeetRec や PC が落ちても、ファイルは直前（最大 2 秒前）まで再生できます。
+次回起動時に自動で修復（末尾の不完全な部分の切り落としと総時間の書き込み）を行い、通知します。
+
+## 設定ファイル
+
+メニューにない項目は TOML ファイルで変更できます（変更後は MeetRec を再起動）。
+
+| OS | 場所 |
+|---|---|
+| macOS | `~/Library/Application Support/MeetRec/config.toml` |
+| Windows | `%APPDATA%\MeetRec\config.toml` |
+
+```toml
+mode = "ask"            # "ask"（確認する）/ "auto"（常に自動録画）/ "off"
+output_dir = ""         # 空なら既定の保存先
+
+[video]
+fps = 10
+max_long_side = 1920
+bitrate_kbps = 1500
+keyframe_seconds = 4
+show_cursor = true
+
+[audio]
+bitrate_kbps = 96
+capture_mic = true
+separate_tracks = false # true にするとミックスに加えて「相手音声」「マイク」を別トラックでも保存
+
+[detect]
+poll_seconds = 2                # 検出の確認間隔（2 以上）
+start_hold_seconds = 2          # 開始条件がこの秒数続いたら検出
+end_grace_seconds = 8           # 会議ウィンドウが消えてから終了とみなすまで
+mic_release_grace_seconds = 10  # マイク解放から終了とみなすまで
+
+[storage]
+fragment_seconds = 2    # 異常終了時に失う最大時間の目安
+min_free_mb = 500       # 空きがこれを下回ったら録画を安全に停止
+retention_days = 0      # 0 = 古い録画を自動削除しない。30 なら 30 日より古い録画を削除
+```
+
+同じフォルダの `meetrec.log`（最大約 1MB）に動作ログ、`diagnostics/` に診断ログが保存されます。
+
+### 検出がうまくいかないとき
+
+Zoom / Teams のプロセス名やウィンドウ名はバージョン・言語で変わることがあります。
+会議中に「診断ログを保存」を実行すると、会議アプリのウィンドウ一覧と「どの規則に何点で一致したか」が出力されます。
+その内容をもとに、`config.toml` の `[[app]]` で定義を上書きできます（組み込みの定義は診断ログの末尾に出力されます）。
+
+```toml
+[[app]]
+id = "zoom"                      # 組み込みと同じ id を書くと、その定義を丸ごと差し替えます
+name = "Zoom"
+process_names = ["zoom.us", "zoom"]
+bundle_prefixes = ["us.zoom.xos"]
+start_score = 90                 # 開始に必要なウィンドウの点数
+strong_score = 60                # この点以上のウィンドウがあればマイク解放でも会議継続
+keep_score = 30                  # この点以上のウィンドウがなくなったら終了
+
+  [[app.windows]]
+  score = 100
+  capture = true
+  title_any = ["Zoom Meeting", "Zoom ミーティング"]
+```
+
+## 開発
+
+```sh
+cargo test --workspace                                   # OS 非依存ロジックのテスト（Linux でも実行可）
+cargo clippy --workspace --all-targets -- -D warnings
+cargo check -p meetrec --target aarch64-apple-darwin     # macOS 向けコードの型検査（Linux 上で可）
+cargo check -p meetrec --target x86_64-pc-windows-msvc   # Windows 向けコードの型検査（Linux 上で可）
+cargo build --release -p meetrec                         # 各 OS 上でのビルド
+packaging/macos/bundle.sh target/release/meetrec dist    # macOS: .app 化と ad-hoc 署名
+```
+
+| クレート | 役割 |
+|---|---|
+| `crates/core` | 検出の状態機械、会議アプリ定数表、全体制御、fMP4 muxer と修復、音声ミキサ、設定、保存（OS 非依存・テスト可能） |
+| `crates/platform-mac` | ScreenCaptureKit / VideoToolbox / AudioToolbox / CoreAudio / AppKit |
+| `crates/platform-win` | Windows.Graphics.Capture / Media Foundation / WASAPI / Win32 |
+| `crates/app` | エントリポイント |
+
+- 設計判断：[DECISIONS.md](DECISIONS.md)
+- 進捗と未検証事項：[PROGRESS.md](PROGRESS.md)
+- 実機確認の手順：[docs/manual-test.md](docs/manual-test.md)
+- 署名・公証の手順：[docs/signing.md](docs/signing.md)
+
+## ライセンス
+
+MIT License。依存クレートはすべて MIT または Apache-2.0 系です。

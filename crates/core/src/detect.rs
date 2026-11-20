@@ -1,7 +1,7 @@
 //! 会議検出の状態機械（OS 非依存）。
 //!
 //! 開始：会議アプリがマイク使用中 かつ 録画対象ウィンドウ（start_score 以上）が存在、
-//!       が `start_hold` 継続。
+//!       が `start_hold` 継続。micless_start_score 以上のウィンドウがあればマイク不問。
 //! 終了：(a) keep_score 以上のウィンドウが `end_grace` の間ひとつもない、または
 //!       (b) マイク未使用 かつ strong_score 以上のウィンドウなし が `mic_release_grace` 継続。
 //!       一時的な切断・再接続では (a)(b) のタイマーがリセットされるので分断しない。
@@ -76,9 +76,19 @@ impl Detector {
     }
 
     fn start_condition(rules: &Rules, obs: &Observation, app: usize) -> Option<Pid> {
-        let root = obs.mic_root(app)?;
-        obs.best_window(app, rules.apps[app].start_score)?;
-        Some(root)
+        let rule = &rules.apps[app];
+        if let Some(root) = obs.mic_root(app) {
+            if obs.best_window(app, rule.start_score).is_some() {
+                return Some(root);
+            }
+        }
+        // マイク未使用でも、会議中にしか現れないウィンドウがあれば開始とみなす。
+        if rule.micless_start_score > 0 {
+            if let Some(w) = obs.best_window(app, rule.micless_start_score) {
+                return Some(obs.mic_root(app).unwrap_or(w.info.owner.pid));
+            }
+        }
+        None
     }
 
     pub fn update(&mut self, rules: &Rules, obs: &Observation, now_ns: u64) -> Option<DetectEvent> {
@@ -267,10 +277,16 @@ mod tests {
 
     #[test]
     fn blip_does_not_start() {
+        // 条件が一瞬だけ成立しても（継続しなければ）発火しない。
         let mut h = H::new();
         assert_eq!(h.step(&zoom_mic(), &[zoom_meeting()]), None);
-        assert_eq!(h.step(&[], &[zoom_meeting()]), None);
+        assert_eq!(h.step(&zoom_mic(), &[zoom_home()]), None);
         assert_eq!(h.step(&zoom_mic(), &[zoom_meeting()]), None);
+        assert!(h.det.active_app().is_none());
+        let mut h = H::new();
+        assert_eq!(h.step(&teams_mic(), &[teams_main()]), None);
+        assert_eq!(h.step(&[], &[teams_main()]), None);
+        assert_eq!(h.step(&teams_mic(), &[teams_main()]), None);
         assert!(h.det.active_app().is_none());
     }
 
@@ -281,8 +297,28 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(h.step(&zoom_mic(), &[zoom_home()]), None);
         }
+        // Teams はウィンドウだけでは会議かどうか分からないので、マイクなしでは始めない。
         for _ in 0..5 {
-            assert_eq!(h.step(&[], &[zoom_meeting()]), None);
+            assert_eq!(h.step(&[], &[teams_main(), teams_meeting()]), None);
+        }
+    }
+
+    #[test]
+    fn zoom_meeting_window_starts_even_without_mic() {
+        // ミュートで参加してマイクが開かれない場合の保険。
+        let mut h = H::new();
+        assert_eq!(h.step(&[], &[zoom_meeting()]), None);
+        assert_eq!(
+            h.step(&[], &[zoom_meeting()]),
+            Some(DetectEvent::Started {
+                app: 0,
+                root_pid: 7
+            })
+        );
+        // ホーム画面だけでは始まらない。
+        let mut h = H::new();
+        for _ in 0..5 {
+            assert_eq!(h.step(&[], &[zoom_home()]), None);
         }
     }
 
