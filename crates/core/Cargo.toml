@@ -1,0 +1,10 @@
+[package]
+name = "meetrec-core"
+description = "MeetRec の OS 非依存ロジック（検出・設定・保存・fMP4 muxer・音声ミキサ）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"

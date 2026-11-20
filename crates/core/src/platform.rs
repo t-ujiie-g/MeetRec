@@ -1,0 +1,217 @@
+//! OS 層との境界。core はここに定義した型と trait だけを通じて OS に触れる。
+//!
+//! すべての `Platform` メソッドはメインスレッド（UI スレッド）から呼ばれる。
+//! OS 層は自分のイベントループを回し、`UiEvent` をメインスレッドで
+//! `App::on_event` に渡す。
+
+use std::path::{Path, PathBuf};
+
+use crate::config::Mode;
+
+pub type Pid = u32;
+
+/// OS のウィンドウ識別子（macOS: CGWindowID、Windows: HWND）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WindowId(pub u64);
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProcInfo {
+    pub pid: Pid,
+    /// 実行ファイル名（パスなし。Windows は `Zoom.exe` のように拡張子付き）。
+    pub name: String,
+    /// macOS のバンドル ID。Windows では None。
+    pub bundle_id: Option<String>,
+}
+
+/// マイクを使用中のプロセス。`chain[0]` が本人、以降は親・祖父…（最大数段）。
+/// Teams のように子プロセス（WebView）が音声を扱うアプリを親で判定するため。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MicUser {
+    pub chain: Vec<ProcInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WindowInfo {
+    pub id: u64,
+    pub owner: ProcInfo,
+    pub title: String,
+    /// Windows のウィンドウクラス名。macOS では空文字列。
+    pub class: String,
+    pub width: u32,
+    pub height: u32,
+    pub minimized: bool,
+}
+
+impl WindowInfo {
+    pub fn window_id(&self) -> WindowId {
+        WindowId(self.id)
+    }
+}
+
+/// ローカル時刻（ファイル名用）。OS 層が提供する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LocalTime {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RawUsage {
+    /// 物理メモリ使用量（macOS: phys_footprint、Windows: Private Working Set 相当）。
+    pub rss_bytes: u64,
+    /// プロセス累積 CPU 時間（user+system）。
+    pub cpu_time_ns: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Permissions {
+    pub screen: bool,
+    pub microphone: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayModel {
+    pub recording: bool,
+    /// 「待機中」「録画中 00:12:34」など。
+    pub status: String,
+    pub mode: Mode,
+    pub autostart: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptModel {
+    pub message: String,
+    pub record_label: String,
+    pub skip_label: String,
+    pub always_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub title: String,
+    pub body: String,
+    /// クリック時に開くパス（フォルダ）。
+    pub open: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAction {
+    RecordNow,
+    StopNow,
+    OpenFolder,
+    SetMode(Mode),
+    ToggleAutostart,
+    SaveDiagnostics,
+    Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptAnswer {
+    Record { always: bool },
+    Skip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecorderEvent {
+    /// 録画が続行不能になった。OS 層は既にセッションを確定済みであること。
+    Failed(String),
+    /// 映像が取得できない（キャプチャ保護・権限なし等）。音声のみで継続中。
+    VideoUnavailable(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiEvent {
+    Launched,
+    /// 定期ティック（`Config::detect.poll_seconds` 間隔）。
+    /// ウィンドウ生成/破棄イベントを受けた OS 層が早めに送ってもよい。
+    Tick,
+    Menu(MenuAction),
+    Prompt(PromptAnswer),
+    Recorder(RecorderEvent),
+    WillSleep,
+    DidWake,
+    /// ログアウト・シャットダウン・OS からの終了要求。
+    Shutdown,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordSettings {
+    pub fps: u32,
+    pub max_long_side: u32,
+    pub video_bitrate_kbps: u32,
+    pub keyframe_seconds: u32,
+    pub show_cursor: bool,
+    pub audio_bitrate_kbps: u32,
+    pub capture_mic: bool,
+    pub separate_tracks: bool,
+    pub fragment_ms: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordRequest {
+    pub path: PathBuf,
+    /// 進行中マーカーファイルの置き場所（`storage::marker_path` 参照）。
+    pub marker_dir: PathBuf,
+    /// 録画対象ウィンドウ。None なら音声のみ。
+    pub window: Option<WindowInfo>,
+    /// 音声を録る会議アプリのルートプロセス（Windows: プロセスツリーの根）。
+    pub root_pid: Pid,
+    pub settings: RecordSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecordingSummary {
+    pub path: PathBuf,
+    pub duration_ms: u64,
+    pub bytes: u64,
+    pub video_frames: u64,
+    pub audio_only: bool,
+    /// 何も書かれずファイルを削除した場合 true。
+    pub empty: bool,
+}
+
+pub trait Platform {
+    // --- 観測（軽い API のみ。2 秒以上の間隔で呼ばれる） ---
+    fn mic_users(&mut self) -> Vec<MicUser>;
+    /// 通常のトップレベルウィンドウ一覧。会議アプリ候補があるときだけ呼ばれる。
+    fn windows(&mut self) -> Vec<WindowInfo>;
+    fn local_time(&self) -> LocalTime;
+    /// 単調時計。録画セッションのタイムスタンプと同じ時計であること。
+    fn now_ns(&self) -> u64;
+    fn free_space(&self, dir: &Path) -> Option<u64>;
+    fn resource_usage(&self) -> Option<RawUsage>;
+    /// 実機調査用の追加情報（会議アプリらしきプロセス一覧など）。
+    fn diagnostics(&mut self) -> String;
+
+    // --- UI ---
+    fn set_tray(&mut self, model: &TrayModel);
+    fn show_prompt(&mut self, prompt: &PromptModel);
+    fn hide_prompt(&mut self);
+    fn notify(&mut self, notice: &Notice);
+    fn open_path(&mut self, path: &Path);
+    fn set_autostart(&mut self, enabled: bool) -> Result<(), String>;
+    fn autostart_enabled(&self) -> bool;
+    fn permissions(&mut self) -> Permissions;
+    /// 権限の案内（ネイティブダイアログ＋設定を開くボタン）を出す。
+    fn request_permissions(&mut self, missing: Permissions);
+
+    // --- 録画 ---
+    fn start_recording(&mut self, req: &RecordRequest) -> Result<(), String>;
+    /// 録画対象ウィンドウを張り替える（ファイルは継続）。
+    fn retarget(&mut self, window: &WindowInfo);
+    /// 同期的に確定して結果を返す。録画中でなければ None。
+    fn stop_recording(&mut self) -> Option<RecordingSummary>;
+
+    fn quit(&mut self);
+}
+
+/// OS 層のイベントループから呼ばれるアプリ本体。
+pub trait App {
+    fn on_event(&mut self, platform: &mut dyn Platform, event: UiEvent);
+    /// 次のティックまでの秒数（OS 層のタイマー設定用）。
+    fn tick_seconds(&self) -> u32;
+}

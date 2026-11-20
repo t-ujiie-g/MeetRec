@@ -1,0 +1,9 @@
+[package]
+name = "meetrec-win"
+description = "MeetRec の Windows 層（Windows.Graphics.Capture / WASAPI / Media Foundation / Win32）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meetrec-core.workspace = true

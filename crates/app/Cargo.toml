@@ -1,0 +1,18 @@
+[package]
+name = "meetrec"
+description = "超軽量 Web 会議自動録画アプリ"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meetrec-core.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+meetrec-mac.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+meetrec-win.workspace = true
+
+[build-dependencies]
+embed-manifest = "1.5"

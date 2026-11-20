@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # OS 非依存ロジック（検出・muxer・ミキサ等）のテスト。最も速く結果が出る。
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+      - name: Build (macOS universal)
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release -p meetrec --target aarch64-apple-darwin
+          cargo build --release -p meetrec --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create -output dist/meetrec \
+            target/aarch64-apple-darwin/release/meetrec \
+            target/x86_64-apple-darwin/release/meetrec
+          packaging/macos/bundle.sh dist/meetrec dist
+          rm dist/meetrec
+          # 目標は単体 20MB 以下。universal は 2 アーキ分なので 40MB を上限にする。
+          SIZE=$(stat -f %z dist/MeetRec.app/Contents/MacOS/meetrec)
+          echo "binary size: $SIZE bytes (universal)"
+          test "$SIZE" -lt 41943040
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release -p meetrec
+          mkdir -p dist
+          cp target/release/meetrec.exe dist/MeetRec.exe
+          SIZE=$(stat -c %s dist/MeetRec.exe)
+          echo "binary size: $SIZE bytes"
+          test "$SIZE" -lt 20971520
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'macOS'
+        with:
+          name: MeetRec-macos
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: MeetRec-windows
+          path: dist/MeetRec.exe
+          if-no-files-found: error
