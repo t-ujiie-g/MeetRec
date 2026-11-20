@@ -337,6 +337,8 @@ pub struct Recorder {
     target: Option<u64>,
     root_pid: u32,
     audio_only: bool,
+    /// 現在のストリームが映像出力付きか（音声だけの代替ストリームなら false）。
+    stream_video: bool,
     last_restart_ns: u64,
 }
 
@@ -394,6 +396,7 @@ impl Recorder {
             target: None,
             root_pid: req.root_pid,
             audio_only: window.is_none(),
+            stream_video: false,
             last_restart_ns: 0,
         };
 
@@ -503,18 +506,19 @@ impl Recorder {
             .as_ref()
             .filter(|_| !rec.audio_only)
             .map(|w| unsafe { w.windowID() } as u64);
-        if let Err(e) = rec.start_stream(&filter) {
+        let video = !rec.audio_only;
+        if let Err(e) = rec.start_stream(&filter, video) {
             rec.stop();
             return Err(format!("キャプチャを開始できません: {e}"));
         }
         Ok(rec)
     }
 
-    fn configuration(&self) -> Retained<SCStreamConfiguration> {
+    fn configuration(&self, video: bool) -> Retained<SCStreamConfiguration> {
         // SAFETY: 設定オブジェクトのプロパティを設定するだけ。
         unsafe {
             let c = SCStreamConfiguration::new();
-            if self.audio_only {
+            if !video {
                 // 映像は使わない。最小サイズ・最低頻度にして負荷を抑える。
                 c.setWidth(2);
                 c.setHeight(2);
@@ -550,8 +554,8 @@ impl Recorder {
     }
 
     /// フィルタから SCStream を作って開始する（初回・再構築の両方で使う）。
-    fn start_stream(&mut self, filter: &SCContentFilter) -> Result<(), String> {
-        let config = self.configuration();
+    fn start_stream(&mut self, filter: &SCContentFilter, video: bool) -> Result<(), String> {
+        let config = self.configuration(video);
         // SAFETY: 出力オブジェクトは self.output が保持し続ける。
         let stream = unsafe {
             let stream = SCStream::initWithFilter_configuration_delegate(
@@ -563,7 +567,7 @@ impl Recorder {
             let output: &ProtocolObject<dyn SCStreamOutput> =
                 ProtocolObject::from_ref(&*self.output);
             let mut kinds = vec![SCStreamOutputType::Audio];
-            if !self.audio_only {
+            if video {
                 kinds.push(SCStreamOutputType::Screen);
             }
             if self.settings.capture_mic {
@@ -576,17 +580,44 @@ impl Recorder {
             }
             stream
         };
-        self.stopped.store(false, Ordering::SeqCst);
         // SAFETY: 完了ハンドラは任意のキューで呼ばれる。メインスレッドは短時間待つだけ。
-        wait_completion(|h| unsafe { stream.startCaptureWithCompletionHandler(Some(h)) })?;
+        let started =
+            wait_completion(|h| unsafe { stream.startCaptureWithCompletionHandler(Some(h)) });
+        // 開始できたときだけ「動作中」にする（失敗時は停止扱いのままにして復旧経路を残す）。
+        self.stopped.store(started.is_err(), Ordering::SeqCst);
+        started?;
         self.stream = Some(stream);
+        self.stream_video = video;
         Ok(())
     }
 
+    /// 映像ストリームがない間も音声を録り続けるための代替ストリーム（アプリ音声＋マイク）。
+    /// 対象ウィンドウが消えた・張り替えに失敗した場合に使う。成功すれば true。
+    fn fallback_audio(&mut self) -> bool {
+        if self.stream.is_some() && !self.stopped.load(Ordering::SeqCst) {
+            return true;
+        }
+        self.stream = None;
+        let result = shareable_content()
+            .and_then(|content| app_audio_filter(&content, self.root_pid))
+            .and_then(|filter| self.start_stream(&filter, false));
+        match result {
+            Ok(()) => {
+                meetrec_core::info!("映像なしで音声の録音を継続します");
+                true
+            }
+            Err(e) => {
+                meetrec_core::warn!("音声の録音を継続できません: {e}");
+                false
+            }
+        }
+    }
+
     /// 録画対象ウィンドウを張り替える。ストリームが止まっていれば作り直す。
-    pub fn retarget(&mut self, window: &WindowInfo) {
+    /// 戻り値 false：映像も音声も取れない状態になった（録画を続けても何も入らない）。
+    pub fn retarget(&mut self, window: &WindowInfo) -> bool {
         if self.audio_only {
-            return;
+            return true;
         }
         let result = shareable_content().and_then(|content| {
             let w =
@@ -595,22 +626,39 @@ impl Recorder {
             let filter = unsafe {
                 SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), &w)
             };
+            let running = self.stream.is_some() && !self.stopped.load(Ordering::SeqCst);
             match &self.stream {
-                Some(stream) if !self.stopped.load(Ordering::SeqCst) => {
+                Some(stream) if running && self.stream_video => {
                     // SAFETY: 実行中のストリームのフィルタ差し替え。
                     wait_completion(|h| unsafe {
                         stream.updateContentFilter_completionHandler(&filter, Some(h))
                     })
                 }
                 _ => {
-                    self.stream = None;
-                    self.start_stream(&filter)
+                    // 止まっている、または音声だけの代替ストリーム：映像付きで作り直す。
+                    if let Some(old) = self.stream.take() {
+                        if running {
+                            // SAFETY: 完了ハンドラは任意のキューで呼ばれる。
+                            let _ = wait_completion(|h| unsafe {
+                                old.stopCaptureWithCompletionHandler(Some(h))
+                            });
+                        }
+                    }
+                    self.stopped.store(true, Ordering::SeqCst);
+                    self.start_stream(&filter, true)
                 }
             }
         });
         match result {
-            Ok(()) => self.target = Some(window.id),
-            Err(e) => meetrec_core::warn!("録画対象を張り替えられません: {e}"),
+            Ok(()) => {
+                self.target = Some(window.id);
+                true
+            }
+            Err(e) => {
+                meetrec_core::warn!("録画対象を張り替えられません: {e}");
+                // 張り替えに失敗しても音声だけは録り続ける。
+                self.fallback_audio()
+            }
         }
     }
 
@@ -624,7 +672,11 @@ impl Recorder {
         if let Some(id) = self.target {
             if !target_exists(id) {
                 // 未検証: 対象ウィンドウが閉じられるとストリームがエラー停止する想定。
-                // controller が次のティックで別のウィンドウへ張り替える。
+                // controller が次のティックで別のウィンドウへ張り替える。代わりのウィンドウが
+                // 現れるまでの間も、音声だけは録り続ける。
+                if !self.fallback_audio() {
+                    return Some(false);
+                }
                 return Some(true);
             }
         }
@@ -649,7 +701,8 @@ impl Recorder {
                 }
                 None => app_audio_filter(&content, self.root_pid)?,
             };
-            self.start_stream(&filter)
+            let video = self.target.is_some();
+            self.start_stream(&filter, video)
         });
         match result {
             Ok(()) => {

@@ -96,6 +96,24 @@ fn dispatch(item: Item) {
     BUSY.set(false);
 }
 
+/// イベント処理中（権限案内のモーダル表示中など）に終了要求が来た場合：
+/// モーダルを閉じさせ、処理が終わってから Shutdown を実際に処理し、その後で終了を許可する。
+fn shutdown_when_idle() {
+    DispatchQueue::main().exec_async(|| {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let nsapp = NSApplication::sharedApplication(mtm);
+        if BUSY.get() {
+            nsapp.abortModal();
+            shutdown_when_idle();
+            return;
+        }
+        dispatch(Item::Ui(UiEvent::Shutdown));
+        nsapp.replyToApplicationShouldTerminate(true);
+    });
+}
+
 pub fn open_path(path: &Path) {
     let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
     if !NSWorkspace::sharedWorkspace().openURL(&url) {
@@ -131,12 +149,7 @@ define_class!(
             }
             // ログアウト・シャットダウン等：録画を確定してから終了する。
             if BUSY.get() {
-                DispatchQueue::main().exec_async(|| {
-                    dispatch(Item::Ui(UiEvent::Shutdown));
-                    if let Some(mtm) = MainThreadMarker::new() {
-                        NSApplication::sharedApplication(mtm).replyToApplicationShouldTerminate(true);
-                    }
-                });
+                shutdown_when_idle();
                 return NSApplicationTerminateReply::TerminateLater;
             }
             dispatch(Item::Ui(UiEvent::Shutdown));
@@ -417,7 +430,10 @@ impl Platform for MacPlatform {
 
     fn retarget(&mut self, window: &WindowInfo) {
         if let Some(recorder) = self.recorder.as_mut() {
-            recorder.retarget(window);
+            if !recorder.retarget(window) {
+                // 映像も音声も取れない：録画を続けても空になるので中断として知らせる。
+                post_recorder(RecorderEvent::Failed("キャプチャを継続できません".into()));
+            }
         }
     }
 

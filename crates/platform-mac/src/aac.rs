@@ -222,13 +222,14 @@ impl MacAac {
                     packets.push(self.out[start..len].to_vec());
                 }
             }
-            if status == NO_MORE_INPUT || n == 0 {
-                break;
-            }
-            if status != 0 {
+            // 本当のエラーを「出力なし」と取り違えない（先にエラーを判定する）。
+            if status != 0 && status != NO_MORE_INPUT {
                 return Err(format!(
                     "AudioConverterFillComplexBuffer 失敗 (OSStatus {status})"
                 ));
+            }
+            if status == NO_MORE_INPUT || n == 0 {
+                break;
             }
         }
         Ok(packets)
