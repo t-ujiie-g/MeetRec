@@ -4,23 +4,18 @@ use std::ffi::CString;
 use std::mem::{size_of, zeroed};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
-use std::sync::OnceLock;
 
 use meetrec_core::platform::{LocalTime, RawUsage};
 
 /// mach_absolute_time をナノ秒にしたもの。ScreenCaptureKit のサンプルの PTS
 /// （ホスト時計）と同じ時間軸。スリープ中は進まない。
 pub fn now_ns() -> u64 {
-    static TIMEBASE: OnceLock<(u64, u64)> = OnceLock::new();
-    let (numer, denom) = *TIMEBASE.get_or_init(|| {
-        let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
-        // SAFETY: 出力用の構造体を渡すだけ。
-        unsafe { libc::mach_timebase_info(&mut info) };
-        (info.numer.max(1) as u64, info.denom.max(1) as u64)
-    });
-    // SAFETY: 引数なしのシステムコール。
-    let ticks = unsafe { libc::mach_absolute_time() };
-    (ticks as u128 * numer as u128 / denom as u128) as u64
+    // SAFETY: 出力用の構造体を渡すだけ。CLOCK_UPTIME_RAW は mach_absolute_time と同じ時計。
+    unsafe {
+        let mut ts: libc::timespec = zeroed();
+        libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut ts);
+        ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+    }
 }
 
 pub fn local_time() -> LocalTime {
