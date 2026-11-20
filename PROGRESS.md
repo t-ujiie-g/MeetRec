@@ -4,23 +4,142 @@
 
 ## 現在地
 - ブランチ：`claude/relaxed-allen-gw2kq3`
-- M0・M1 完了。M2 以降（OS 層）を実装中。
+- M0〜M7 のコードと文書は一通り実装済み。**macOS / Windows の実機では一度も動かしていない**
+  （開発環境が Linux コンテナのため）。確認できているのは「Linux 上のユニットテスト」「両 OS 向けの型検査・clippy」
+  「CI（実機ランナー）でのビルド・リンク・core テスト」まで。
+- 次の一歩は、人が `docs/manual-test.md` を実機で実施し、NG 項目の診断ログをもとに直すこと。
 
 ## 完了
-- M0：ワークスペース骨格（`crates/core` `crates/platform-mac` `crates/platform-win` `crates/app`）、
-  CI（`.github/workflows/ci.yml`：ubuntu で core テスト、macos/windows で fmt・clippy・test・release ビルド・成果物）。
-- M1：core（Linux でユニットテスト 81 件が通る）
+- M0：ワークスペース骨格、CI（ubuntu で core テスト、macos/windows で fmt・clippy・test・release ビルド・成果物）。
+- M1：core（ユニットテスト 83 件）
   - `rules` 会議アプリ定数表と照合、`detect` 検出状態機械、`controller` 全体制御（`Platform` をモックしてテスト）
   - `mp4` fragmented MP4 muxer と修復（ffmpeg で生成した実 H.264/AAC を mux し ffprobe/ffmpeg で再生確認済み）
   - `audio` ミキサ（リサンプル・ドリフト吸収・デバイス切替）、`session` 録画セッション
   - `storage` 命名・マーカー・修復・自動削除、`config`、`log`、`metrics`、`text`
+- M2〜M4：`platform-mac`（約 2,700 行）/ `platform-win`（約 3,300 行）
+  - 常駐 UI（メニューバー/トレイ、確認ポップアップ、通知、ログイン時起動、権限案内）
+  - 観測（マイク使用プロセスと祖先チェーン、ウィンドウ一覧、診断ダンプ）
+  - 録画（mac：ScreenCaptureKit 単一ウィンドウ＋アプリ音声＋マイク → VideoToolbox / AudioConverter、
+    win：WGC → D3D11 Video Processor → H.264 MFT、WASAPI プロセスループバック＋マイク → AAC MFT）
+  - ウィンドウ張り替え（`retarget`）、音声のみへのフォールバック
+- M5：進行中マーカーと起動時修復、スリープ／ログアウト／終了時の確定、ディスク残量監視（core で実装・テスト済み。
+  OS 層はイベントを core に渡すだけ）
+- M6：自己計測（待機/録画別のメモリ・CPU、目標値との照合）を診断ログと `meetrec.log` に出力。
+  **実測値との照合と最適化は未実施**（実機が必要）。
+- M7：`README.md`、`docs/manual-test.md`、`docs/signing.md`
 
 ## 次にやること
-- M2〜M4：`platform-mac` / `platform-win` の実装（`core::platform::Platform` を実装し `run(app)` を提供）
-- M5〜M7：異常系の仕上げ、計測、README、docs/manual-test.md
+1. CI が両 OS で緑になっていることを確認（赤なら直す）。← このセッションで確認する
+2. 実機で `docs/manual-test.md` を実施してもらい、診断ログをもとに `core::rules` の定数表と OS 層を修正。
+3. 実測値をもとに M6 の最適化（特に待機中 CPU：mac の App Nap 抑止、win の H.264 出力待ちポーリング）。
+4. 余力があれば：イベント駆動の検出（CoreAudio リスナ / WinEvent フック）、Windows インストーラ、アプリアイコン。
 
-## 未検証事項
-（OS 層の実装後に列挙する）
+## 既知の制限・妥協
+- 検出はポーリングのみ（2 秒間隔。マイク未使用時の Zoom ウィンドウ走査は 10 秒間隔）。
+- キャプチャ保護されたウィンドウが「黒いフレーム」として届く場合は検知できない（音声のみへの切替・通知は、
+  キャプチャ開始失敗・フレームが 5 秒来ない場合のみ）。
+- 録画の開始・停止・張り替えで UI スレッドを最大 3〜5 秒待たせることがある（通常は数百 ms の想定）。
+- AAC のプライミング遅延（約 20〜45ms）は補正していない。
+- Windows：ハードウェア GPU がない環境（RDP・一部 VM）は映像なしの音声のみ。インストーラなし。
+  確認ポップアップはモニタごとの DPI 変更に追従しない。
+- macOS：アプリアイコン（.icns）なし。ad-hoc 署名のため更新のたびに画面収録の許可が外れる可能性。
+- `Platform::retarget` は失敗を返せない（失敗時はログのみ。対象が消えていれば次のティックで再度張り替えを試みる）。
+
+## 未検証事項（実機確認が必要な仮定）
+
+### 共通（core の定数表・検出ロジック）
+- Zoom のプロセス名（mac `zoom.us` / win `Zoom.exe`）、バンドル ID `us.zoom.xos`。
+- Zoom の会議ウィンドウ：タイトル「Zoom Meeting」「Zoom ミーティング」「Zoom Webinar」「Zoom ウェビナー」、
+  Windows のクラス `ZPContentViewWndClass` / `ConfMultiTabContentWndClass`。新しい Zoom Workplace で
+  会議ウィンドウのタイトルが会議名や「Zoom Workplace」になっていないか。
+- Zoom の画面共有中のウィンドウ：フローティングビデオ（win クラス `ZPFloatVideoWndClass` / `VideoFrameWndClass`、
+  mac タイトル `zoom floating video window`）、ツールバー（win `ZPToolBarParentWndClass` / `ZPFloatToolbarClass`、
+  mac `zoom share toolbar window` / `zoom share statusbar window`）。
+- Zoom の参加前プレビューや待機室のウィンドウが会議ウィンドウの規則に一致して、早すぎる検出にならないか
+  （D14 のマイク不問の開始が誤爆しないか）。
+- 新 Teams のプロセス名（win `ms-teams.exe`、mac `MSTeams`）、バンドル ID `com.microsoft.teams2`、
+  マイクを使うのが子プロセス（WebView2 / ヘルパー）であること。
+- Teams のウィンドウタイトル：会議ウィンドウが「<会議名> | Microsoft Teams」、メインウィンドウが
+  「チャット | Microsoft Teams」等のタブ名始まりであること（英語/日本語のタブ名一覧が足りているか）。
+  コンパクト表示のタイトル（`compact view` / `コンパクト ビュー`）。
+- Teams で会議後にポップアウトしたチャット等（タブ名で始まらないウィンドウ）が残ると、録画が終わらない恐れ。
+- ミュート中に Zoom / Teams がマイクを開いたままにするか（解放する場合：Zoom はウィンドウで継続、
+  Teams は会議ウィンドウの規則が当たらないと 10 秒で終了と誤判定する）。
+- ミュートで参加した場合に検出できるか（Zoom は D14 で対応、Teams はマイクが開かれないと検出不可）。
+- 会議タイトルの抽出（Teams のタイトルから「| Microsoft Teams」を除いたもの）が妥当か。
+- fragmented MP4 が各プレイヤーで再生・シークできるか（ffmpeg/ffprobe では確認済み。QuickTime Player、
+  クイックルック、Windows のメディア プレーヤー／映画 & テレビ、ブラウザは未確認）。静止区間の長いサンプルの扱い。
+- 無効フラグを付けた追加音声トラック（`separate_tracks = true`）が、プレイヤーで二重再生されないか。
+- OS のエンコーダが出す実データでの A/V 同期（ミキサ遅延 250ms、AAC プライミング未補正）。
+- 目標値（待機 30MB / 0.1%、録画 150MB / 10%、バイナリ 20MB）との照合。
+
+### macOS
+- マイク使用判定（`kAudioHardwarePropertyProcessObjectList` / `kAudioProcessPropertyIsRunningInput`）が
+  Zoom／新 Teams の通話中に true になるか。ミュート中も true のままか。
+- Teams のマイク使用プロセス（ヘルパー）の親をたどると本体（`com.microsoft.teams2`）に届くか
+  （`proc_pidinfo` の ppid、最大 6 段）。届かない場合、CoreAudio が返すバンドル ID が前方一致するか。
+- `NSRunningApplication` でヘルパープロセスのバンドル ID が取れるか（取れない場合は名前とチェーン頼み）。
+- CGWindowList（layer 0、オフスクリーン含む）で会議ウィンドウのタイトルが取れるか。
+  画面収録が未許可だとタイトルが空になり、Zoom の検出が効かない。
+- Zoom／Teams の非表示ウィンドウ（オフスクリーン）が会議ウィンドウの規則に誤一致しないか
+  （特に Teams のフォールバック規則「300x200 以上の任意のウィンドウ」）。
+- `minimized` を「オンスクリーンでない」で代用している（別 Space や隠れたウィンドウも true になる）。
+- SCShareableContent の完了ハンドラがメインキュー以外で呼ばれること（メインで呼ばれると 3 秒タイムアウトで失敗する）。
+- desktopIndependentWindow フィルタで `capturesAudio` すると、ウィンドウ所有アプリ（ヘルパープロセス含む）の音だけが入るか。
+- `captureMicrophone`（macOS 15）のサンプル形式（float32／int16／int32 の LPCM のみ対応）と、PTS がアプリ音声と同じ時間軸か。
+- SCStream の PTS が mach_absolute_time と同じホスト時計か（ずれていればログに警告が出て補正される）。
+- 対象ウィンドウが閉じた／最小化／フルスクリーン化したときの SCStream の挙動（エラー停止するか、idle フレームになるか）。
+- `updateContentFilter` でウィンドウを替えたとき、同じキャンバスにレターボックスで収まるか。
+- 静止画面で SCFrameStatus が idle のフレームだけになること。フルスクリーン時にフレームが届くか。
+- 音声のみ録音の経路（ディスプレイ＋対象アプリのフィルタ、映像出力なし）が動くか。
+- VideoToolbox のハードウェア必須指定が Apple Silicon／Intel で成功するか。RealTime＋並べ替えなしで
+  出力が遅延なく出るか（静止直前のフレームがエンコーダに滞留しないか）。NAL 長が 4 バイトか。
+- AudioConverter：1024 フレームごとに 1 パケット出るか。magic cookie から ASC を取り出せるか
+  （失敗時は `[0x11,0x90]`）。96kbps が設定できるか。
+- 非アクティブ化パネルが会議アプリのフルスクリーン上に出るか、フォーカスを奪わずにボタンとチェックボックスが押せるか。
+- 通知：ad-hoc 署名の .app で許可ダイアログ・バナーが出るか、クリックでフォルダが開くか。
+- `SMAppService.mainApp` の登録が ad-hoc 署名／`/Applications` 以外の場所で成功するか。
+- ad-hoc 署名でビルドごとに画面収録の許可がリセットされるか。権限案内（OS のダイアログ＋自前アラート）が
+  二重で煩わしくないか。許可後に再起動が必要か。
+- ログアウト／シャットダウン時に `applicationShouldTerminate` が呼ばれ、録画が確定してから終了するか。
+- スリープ通知（NSWorkspace willSleep）から実際のスリープまでに確定が間に合うか。
+- 待機中のメモリ／CPU（App Nap 抑止の影響を含む）と録画中の値。`phys_footprint` で計測。
+
+### Windows
+- Shell_NotifyIcon VERSION_4 のイベント（左クリック、右クリック、バルーンクリック）が想定どおり届くか。
+  バルーンが Win10/11 でトースト表示されるか。
+- 実行時描画アイコン（32bpp 乗算済みアルファ）の見え方（明暗タスクバー、高 DPI）。
+- 確認ポップアップが WS_EX_NOACTIVATE のままボタン・チェックボックスを操作できるか。日本語の折り返しとサイズ。
+- オーディオセッション列挙で「マイク使用中」を正しく拾えるか（Zoom.exe、Teams の msedgewebview2.exe）。
+  ミュート中に Active のままか。MeetRec 自身の録音セッションが検出に影響しないこと。
+- ウィンドウ列挙（所有ウィンドウ含む、クローク除外）で Zoom/Teams の各ウィンドウが取れるか。
+- 祖先チェーンで ms-teams.exe に届くか（最大 5 段で足りるか）。`normalize_root_pid` の結果が
+  Zoom / Teams で正しいプロセスツリーの根になるか。
+- プロセスループバック：16bit/48k/2ch（LOOPBACK|EVENTCALLBACK|AUTOCONVERTPCM、バッファ 200ms）で初期化できるか。
+  QPC タイムスタンプが有効か。Teams の WebView 子プロセスの音が入るか。
+  アクティベーション引数（VT_BLOB の PROPVARIANT を自前の repr(C) 構造体で渡している。x64 で 24 バイトの前提）。
+- マイク：ミックスフォーマットの解釈、既定デバイス切替時の開き直し、排他モード使用中アプリとの共存。
+- マイクのプライバシー判定に使っている ConsentStore レジストリ値（`Value` が "Deny"）。
+- WGC：`CreateForWindow` が所有ウィンドウ・最小化ウィンドウで成功するか。`IsBorderRequired=false` で
+  黄色枠が消えるか（Borderless のアクセス要求は結果を待っていない）。FrameArrived 内の `Recreate`。
+  SystemRelativeTime が QPC と同じ時計であること。他ウィンドウに隠れていても中身だけ録れるか。
+  キャプチャ保護ウィンドウの挙動。
+- Video Processor：WGC テクスチャを入力ビューにできるか。RENDER_TARGET のみの NV12 テクスチャを各社
+  HW エンコーダが受け付けるか。色空間（BT.709 限定レンジ）。
+- H.264 HW MFT（Intel/NVIDIA/AMD）：非同期イベント処理、D3D マネージャ設定、ICodecAPI の各設定が効くか、
+  出力が Annex B か、SPS/PPS の有無、Main プロファイル指定。
+- 低遅延でないエンコーダで出力待ちが残り、静止中も 15ms 間隔で起き続ける点の CPU 影響。
+- ソフトウェア MFT が DXGI サーフェスバッファを Lock で読めるか（フォールバック経路）。
+- AAC MFT：タイプ設定順、96kbps 指定、MF_MT_USER_DATA の先頭 12 バイト以降が ASC であること、
+  1 入力 1024 サンプルに対し 1 パケット出ること。
+- 停止時：5 秒以内に全スレッドが終わるか。HW MFT の drain、MFShutdown の順序で落ちないか。
+- WM_ENDSESSION 中の同期確定が OS の猶予時間内に終わるか。スリープ（PBT_APMSUSPEND）で確定できるか。
+- メモリ計測は WorkingSetSize を使用（目標値との照合は未実施）。
+- Run キーによる自動起動、多重起動防止ミューテックス、SmartScreen 下での起動。
+
+## CI の確認方法
+- GitHub Actions の実行結果はこのセッションから確認できる（GitHub MCP の actions ツール）。
+  新しいセッションでも、プッシュ後に毎回 3 ジョブ（core / macos / windows）の結果を確認し、赤なら直すこと。
 
 ## 開発コマンド
 ```sh
