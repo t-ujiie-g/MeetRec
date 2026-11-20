@@ -22,9 +22,8 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW,
-    RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE,
-    REG_OPTION_NON_VOLATILE, REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
 };
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, GetProcessTimes};
@@ -80,7 +79,9 @@ fn dispatch(ev: UiEvent) {
         }
     });
     MAIN.with(|m| {
-        let Ok(mut guard) = m.try_borrow_mut() else { return };
+        let Ok(mut guard) = m.try_borrow_mut() else {
+            return;
+        };
         let Some(main) = guard.as_mut() else { return };
         while let Some(ev) = QUEUE.with(|q| q.borrow_mut().pop_front()) {
             main.app.on_event(&mut main.plat, ev);
@@ -92,8 +93,13 @@ fn dispatch(ev: UiEvent) {
 pub fn post_recorder_event(hwnd: isize, kind: usize, message: String) {
     let raw = Box::into_raw(Box::new(message));
     unsafe {
-        if PostMessageW(Some(HWND(hwnd as *mut _)), WM_RECORDER, WPARAM(kind), LPARAM(raw as isize))
-            .is_err()
+        if PostMessageW(
+            Some(HWND(hwnd as *mut _)),
+            WM_RECORDER,
+            WPARAM(kind),
+            LPARAM(raw as isize),
+        )
+        .is_err()
         {
             drop(Box::from_raw(raw));
         }
@@ -111,7 +117,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             match (lparam.0 as u32) & 0xffff {
                 WM_CONTEXTMENU | NIN_SELECT | NIN_KEYSELECT => {
                     let model = MAIN.with(|m| {
-                        m.try_borrow().ok().and_then(|g| g.as_ref().map(|x| x.plat.tray.model.clone()))
+                        m.try_borrow()
+                            .ok()
+                            .and_then(|g| g.as_ref().map(|x| x.plat.tray.model.clone()))
                     });
                     if let Some(model) = model {
                         if let Some(action) = tray::show_menu(hwnd, &model) {
@@ -121,7 +129,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
                 NIN_BALLOONUSERCLICK => {
                     let path = MAIN.with(|m| {
-                        m.try_borrow().ok().and_then(|g| g.as_ref().and_then(|x| x.plat.last_open.clone()))
+                        m.try_borrow()
+                            .ok()
+                            .and_then(|g| g.as_ref().and_then(|x| x.plat.last_open.clone()))
                     });
                     if let Some(path) = path {
                         open_path(&path);
@@ -133,7 +143,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_PROMPT_ANSWER => {
             let answer = match wparam.0 {
-                1 => PromptAnswer::Record { always: lparam.0 != 0 },
+                1 => PromptAnswer::Record {
+                    always: lparam.0 != 0,
+                },
                 _ => PromptAnswer::Skip,
             };
             dispatch(UiEvent::Prompt(answer));
@@ -162,7 +174,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 MB_YESNO | MB_ICONINFORMATION | MB_SETFOREGROUND,
             );
             if r == IDYES {
-                ShellExecuteW(None, w!("open"), w!("ms-settings:privacy-microphone"), None, None, SW_SHOWNORMAL);
+                ShellExecuteW(
+                    None,
+                    w!("open"),
+                    w!("ms-settings:privacy-microphone"),
+                    None,
+                    None,
+                    SW_SHOWNORMAL,
+                );
             }
             LRESULT(0)
         }
@@ -207,7 +226,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 fn open_path(path: &Path) {
     let p = wide(&path.to_string_lossy());
     unsafe {
-        ShellExecuteW(None, w!("open"), PCWSTR(p.as_ptr()), None, None, SW_SHOWNORMAL);
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(p.as_ptr()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        );
     }
 }
 
@@ -221,7 +247,9 @@ pub fn run(app: Box<dyn App>) {
         }
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
-        let inst = GetModuleHandleW(None).map(|m| HINSTANCE(m.0)).unwrap_or_default();
+        let inst = GetModuleHandleW(None)
+            .map(|m| HINSTANCE(m.0))
+            .unwrap_or_default();
         let class = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(wndproc),
@@ -437,7 +465,10 @@ impl Platform for WinPlatform {
 
     fn permissions(&mut self) -> Permissions {
         // Windows には画面収録の事前許可はない。マイクはプライバシー設定のみ確認する。
-        Permissions { screen: true, microphone: probe::microphone_allowed() }
+        Permissions {
+            screen: true,
+            microphone: probe::microphone_allowed(),
+        }
     }
 
     fn request_permissions(&mut self, missing: Permissions) {

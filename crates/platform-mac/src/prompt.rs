@@ -26,16 +26,13 @@ impl Prompt {
         let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WIDTH, HEIGHT));
         // タイトルバーのみ（閉じるボタンなし）。NonactivatingPanel でフォーカスを奪わない。
         let style = NSWindowStyleMask::Titled | NSWindowStyleMask::NonactivatingPanel;
-        // SAFETY: メインスレッドで通常の初期化子を呼ぶ。
-        let panel = unsafe {
-            NSPanel::initWithContentRect_styleMask_backing_defer(
-                NSPanel::alloc(mtm),
-                rect,
-                style,
-                NSBackingStoreType::Buffered,
-                false,
-            )
-        };
+        let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
+            NSPanel::alloc(mtm),
+            rect,
+            style,
+            NSBackingStoreType::Buffered,
+            false,
+        );
         // SAFETY: Retained で保持するので、close 時の自動解放は無効にする。
         unsafe { panel.setReleasedWhenClosed(false) };
         panel.setTitle(&NSString::from_str(text::APP_NAME));
@@ -81,8 +78,14 @@ impl Prompt {
             NSPoint::new(MARGIN, 42.0),
             NSSize::new(WIDTH - MARGIN * 2.0, 20.0),
         ));
-        skip.setFrame(NSRect::new(NSPoint::new(WIDTH - 250.0, 8.0), NSSize::new(120.0, 30.0)));
-        record.setFrame(NSRect::new(NSPoint::new(WIDTH - 130.0, 8.0), NSSize::new(118.0, 30.0)));
+        skip.setFrame(NSRect::new(
+            NSPoint::new(WIDTH - 250.0, 8.0),
+            NSSize::new(120.0, 30.0),
+        ));
+        record.setFrame(NSRect::new(
+            NSPoint::new(WIDTH - 130.0, 8.0),
+            NSSize::new(118.0, 30.0),
+        ));
         // Return キーで「録画する」。
         record.setKeyEquivalent(&NSString::from_str("\r"));
         if let Some(content) = panel.contentView() {

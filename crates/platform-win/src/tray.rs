@@ -10,8 +10,8 @@ use windows::Win32::Graphics::Gdi::{
     DIB_RGB_COLORS,
 };
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO,
-    NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
@@ -70,7 +70,11 @@ fn make_icon(recording: bool, size: i32) -> HICON {
         let r_out = size as f32 * 0.44;
         let r_in = if recording { 0.0 } else { size as f32 * 0.27 };
         // 録画中＝赤、待機中＝明暗どちらのタスクバーでも見えるグレー。
-        let (r, g, b) = if recording { (232u32, 17u32, 35u32) } else { (140u32, 140u32, 140u32) };
+        let (r, g, b) = if recording {
+            (232u32, 17u32, 35u32)
+        } else {
+            (140u32, 140u32, 140u32)
+        };
         for y in 0..size {
             for x in 0..size {
                 let mut hit = 0u32;
@@ -91,7 +95,12 @@ fn make_icon(recording: bool, size: i32) -> HICON {
             }
         }
         let mask = CreateBitmap(size, size, 1, 1, None);
-        let info = ICONINFO { fIcon: true.into(), hbmMask: mask, hbmColor: color, ..Default::default() };
+        let info = ICONINFO {
+            fIcon: true.into(),
+            hbmMask: mask,
+            hbmColor: color,
+            ..Default::default()
+        };
         let icon = CreateIconIndirect(&info).unwrap_or_default();
         let _ = DeleteObject(mask.into());
         let _ = DeleteObject(color.into());
@@ -126,10 +135,17 @@ impl Tray {
             uID: ICON_ID,
             uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP,
             uCallbackMessage: self.callback_msg,
-            hIcon: if self.model.recording { self.icon_rec } else { self.icon_idle },
+            hIcon: if self.model.recording {
+                self.icon_rec
+            } else {
+                self.icon_idle
+            },
             ..Default::default()
         };
-        copy_wide(&mut d.szTip, &format!("{} - {}", text::APP_NAME, self.model.status));
+        copy_wide(
+            &mut d.szTip,
+            &format!("{} - {}", text::APP_NAME, self.model.status),
+        );
         d
     }
 
@@ -207,14 +223,24 @@ pub fn show_menu(hwnd: HWND, model: &TrayModel) -> Option<MenuAction> {
         }
         item(menu, MF_STRING, ID_OPEN, text::MENU_OPEN_FOLDER);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        for (id, mode) in
-            [(ID_MODE_ASK, Mode::Ask), (ID_MODE_AUTO, Mode::Auto), (ID_MODE_OFF, Mode::Off)]
-        {
-            let check = if model.mode == mode { MF_CHECKED } else { MENU_ITEM_FLAGS(0) };
+        for (id, mode) in [
+            (ID_MODE_ASK, Mode::Ask),
+            (ID_MODE_AUTO, Mode::Auto),
+            (ID_MODE_OFF, Mode::Off),
+        ] {
+            let check = if model.mode == mode {
+                MF_CHECKED
+            } else {
+                MENU_ITEM_FLAGS(0)
+            };
             item(modes, MF_STRING | check, id, text::mode_label(mode));
         }
         item(menu, MF_POPUP, modes.0 as usize, text::MENU_MODE);
-        let check = if model.autostart { MF_CHECKED } else { MENU_ITEM_FLAGS(0) };
+        let check = if model.autostart {
+            MF_CHECKED
+        } else {
+            MENU_ITEM_FLAGS(0)
+        };
         item(menu, MF_STRING | check, ID_AUTOSTART, text::MENU_AUTOSTART);
         item(menu, MF_STRING, ID_DIAG, text::MENU_DIAGNOSTICS);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());

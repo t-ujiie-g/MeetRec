@@ -4,17 +4,19 @@
 use meetrec_core::platform::PromptModel;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{CreateFontIndirectW, DeleteObject, HBRUSH, HFONT};
+use windows::Win32::Graphics::Gdi::{
+    CreateFontIndirectW, DeleteObject, COLOR_BTNFACE, HBRUSH, HFONT,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, LoadCursorW, PostMessageW,
     RegisterClassExW, SendMessageW, SetWindowLongPtrW, ShowWindow, SystemParametersInfoW,
-    BM_GETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, COLOR_BTNFACE, GWLP_USERDATA,
-    HMENU, IDC_ARROW, NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SPI_GETWORKAREA,
-    SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_CLOSE, WM_COMMAND, WM_SETFONT, WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    BM_GETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, GWLP_USERDATA, HMENU, IDC_ARROW,
+    NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SPI_GETWORKAREA, SW_SHOWNOACTIVATE,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
+    WM_SETFONT, WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::sys::wide;
@@ -64,11 +66,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
 impl Prompt {
     pub fn new(main: HWND, answer_msg: u32) -> Prompt {
-        Prompt { main, answer_msg, hwnd: None, font: HFONT::default(), registered: false }
+        Prompt {
+            main,
+            answer_msg,
+            hwnd: None,
+            font: HFONT::default(),
+            registered: false,
+        }
     }
 
     fn instance() -> HINSTANCE {
-        unsafe { GetModuleHandleW(None).map(|m| HINSTANCE(m.0)).unwrap_or_default() }
+        unsafe {
+            GetModuleHandleW(None)
+                .map(|m| HINSTANCE(m.0))
+                .unwrap_or_default()
+        }
     }
 
     pub fn show(&mut self, model: &PromptModel) {
@@ -116,7 +128,12 @@ impl Prompt {
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
             );
             if work.right <= work.left {
-                work = RECT { left: 0, top: 0, right: s(1280), bottom: s(720) };
+                work = RECT {
+                    left: 0,
+                    top: 0,
+                    right: s(1280),
+                    bottom: s(720),
+                };
             }
             let title = wide(meetrec_core::text::APP_NAME);
             let Ok(hwnd) = CreateWindowExW(
@@ -155,7 +172,12 @@ impl Prompt {
                 )
                 .unwrap_or_default();
                 if !font.is_invalid() {
-                    SendMessageW(c, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+                    SendMessageW(
+                        c,
+                        WM_SETFONT,
+                        Some(WPARAM(font.0 as usize)),
+                        Some(LPARAM(1)),
+                    );
                 }
                 c
             };
@@ -190,7 +212,11 @@ impl Prompt {
                 30,
                 ID_SKIP,
             );
-            let ctx = Box::new(Ctx { main: self.main, answer_msg: self.answer_msg, checkbox });
+            let ctx = Box::new(Ctx {
+                main: self.main,
+                answer_msg: self.answer_msg,
+                checkbox,
+            });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(ctx) as isize);
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             self.hwnd = Some(hwnd);

@@ -83,10 +83,19 @@ impl MfAac {
                 }
             }
         }
-        let out_size = mft.GetOutputStreamInfo(0).map(|i| i.cbSize).unwrap_or(0).max(8192);
+        let out_size = mft
+            .GetOutputStreamInfo(0)
+            .map(|i| i.cbSize)
+            .unwrap_or(0)
+            .max(8192);
         let _ = mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
         let _ = mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
-        Ok(MfAac { mft, asc, out_size, time: 0 })
+        Ok(MfAac {
+            mft,
+            asc,
+            out_size,
+            time: 0,
+        })
     }
 
     unsafe fn input_sample(&mut self, pcm: &[f32]) -> WinResult<IMFSample> {
@@ -155,7 +164,9 @@ impl AacEncoder for MfAac {
         let mut out = Vec::new();
         unsafe {
             let sample = self.input_sample(pcm).map_err(|e| e.to_string())?;
-            self.mft.ProcessInput(0, &sample, 0).map_err(|e| e.to_string())?;
+            self.mft
+                .ProcessInput(0, &sample, 0)
+                .map_err(|e| e.to_string())?;
             self.drain_output(&mut out).map_err(|e| e.to_string())?;
         }
         Ok(out)

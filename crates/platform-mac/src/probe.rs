@@ -125,20 +125,23 @@ struct AudioProc {
 
 /// CoreAudio を使っているプロセスの一覧（macOS 14.2 以降の「プロセスオブジェクト」）。
 fn audio_processes() -> Vec<AudioProc> {
-    audio_prop_ids(kAudioObjectSystemObject as u32, kAudioHardwarePropertyProcessObjectList)
-        .into_iter()
-        .filter_map(|obj| {
-            let pid: i32 = audio_prop(obj, kAudioProcessPropertyPID)?;
-            let input: u32 = audio_prop(obj, kAudioProcessPropertyIsRunningInput).unwrap_or(0);
-            let output: u32 = audio_prop(obj, kAudioProcessPropertyIsRunningOutput).unwrap_or(0);
-            Some(AudioProc {
-                pid: pid as u32,
-                bundle_id: audio_prop_string(obj, kAudioProcessPropertyBundleID),
-                input: input != 0,
-                output: output != 0,
-            })
+    audio_prop_ids(
+        kAudioObjectSystemObject as u32,
+        kAudioHardwarePropertyProcessObjectList,
+    )
+    .into_iter()
+    .filter_map(|obj| {
+        let pid: i32 = audio_prop(obj, kAudioProcessPropertyPID)?;
+        let input: u32 = audio_prop(obj, kAudioProcessPropertyIsRunningInput).unwrap_or(0);
+        let output: u32 = audio_prop(obj, kAudioProcessPropertyIsRunningOutput).unwrap_or(0);
+        Some(AudioProc {
+            pid: pid as u32,
+            bundle_id: audio_prop_string(obj, kAudioProcessPropertyBundleID),
+            input: input != 0,
+            output: output != 0,
         })
-        .collect()
+    })
+    .collect()
 }
 
 #[derive(Default)]
@@ -224,10 +227,16 @@ impl Probe {
             )
         };
         let number = |d: &NSDictionary<NSString, AnyObject>, k: &NSString| -> Option<f64> {
-            d.objectForKey(k)?.downcast::<NSNumber>().ok().map(|n| n.doubleValue())
+            d.objectForKey(k)?
+                .downcast::<NSNumber>()
+                .ok()
+                .map(|n| n.doubleValue())
         };
         let string = |d: &NSDictionary<NSString, AnyObject>, k: &NSString| -> Option<String> {
-            d.objectForKey(k)?.downcast::<NSString>().ok().map(|s| s.to_string())
+            d.objectForKey(k)?
+                .downcast::<NSString>()
+                .ok()
+                .map(|s| s.to_string())
         };
         let me = sys::own_pid();
         let mut out = Vec::new();
@@ -235,7 +244,9 @@ impl Probe {
             if number(&d, k_layer) != Some(0.0) {
                 continue;
             }
-            let (Some(id), Some(pid)) = (number(&d, k_num), number(&d, k_pid)) else { continue };
+            let (Some(id), Some(pid)) = (number(&d, k_num), number(&d, k_pid)) else {
+                continue;
+            };
             let pid = pid as u32;
             if pid == me {
                 continue;
@@ -276,7 +287,10 @@ impl Probe {
     /// 実機調査用：会議アプリらしきプロセスと CoreAudio の使用状況。
     pub fn diagnostics(&mut self) -> String {
         let mut s = String::new();
-        let _ = writeln!(s, "-- 名前/パス/バンドル ID に zoom・teams を含むプロセス --");
+        let _ = writeln!(
+            s,
+            "-- 名前/パス/バンドル ID に zoom・teams を含むプロセス --"
+        );
         for pid in sys::all_pids() {
             let path = sys::proc_path(pid).unwrap_or_default();
             let lower = path.to_lowercase();

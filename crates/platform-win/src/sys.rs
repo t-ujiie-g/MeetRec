@@ -103,8 +103,13 @@ pub fn process_name(pid: u32) -> Option<String> {
         let h = Handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?);
         let mut buf = [0u16; 1024];
         let mut len = buf.len() as u32;
-        QueryFullProcessImageNameW(h.0, PROCESS_NAME_FORMAT(0), PWSTR(buf.as_mut_ptr()), &mut len)
-            .ok()?;
+        QueryFullProcessImageNameW(
+            h.0,
+            PROCESS_NAME_FORMAT(0),
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+        .ok()?;
         Some(base_name(&String::from_utf16_lossy(&buf[..len as usize])))
     }
 }

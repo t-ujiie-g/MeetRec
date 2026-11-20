@@ -38,7 +38,10 @@ struct CaptureSession {
 
 impl Probe {
     pub fn new() -> Probe {
-        Probe { enumerator: None, chain_cache: (Vec::new(), Vec::new()) }
+        Probe {
+            enumerator: None,
+            chain_cache: (Vec::new(), Vec::new()),
+        }
     }
 
     fn enumerator(&mut self) -> Option<IMMDeviceEnumerator> {
@@ -51,7 +54,9 @@ impl Probe {
 
     fn capture_sessions(&mut self) -> Vec<CaptureSession> {
         let mut out = Vec::new();
-        let Some(en) = self.enumerator() else { return out };
+        let Some(en) = self.enumerator() else {
+            return out;
+        };
         unsafe {
             let Ok(devices) = en.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) else {
                 // 列挙子が無効になった可能性があるので作り直す。
@@ -59,17 +64,27 @@ impl Probe {
                 return out;
             };
             for i in 0..devices.GetCount().unwrap_or(0) {
-                let Ok(device) = devices.Item(i) else { continue };
+                let Ok(device) = devices.Item(i) else {
+                    continue;
+                };
                 // セッション一覧を最新にするため、マネージャは毎回取り直す。
                 let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else {
                     continue;
                 };
-                let Ok(sessions) = manager.GetSessionEnumerator() else { continue };
+                let Ok(sessions) = manager.GetSessionEnumerator() else {
+                    continue;
+                };
                 for n in 0..sessions.GetCount().unwrap_or(0) {
-                    let Ok(control) = sessions.GetSession(n) else { continue };
-                    let Ok(control2) = control.cast::<IAudioSessionControl2>() else { continue };
+                    let Ok(control) = sessions.GetSession(n) else {
+                        continue;
+                    };
+                    let Ok(control2) = control.cast::<IAudioSessionControl2>() else {
+                        continue;
+                    };
                     let pid = control2.GetProcessId().unwrap_or(0);
-                    let active = control.GetState().is_ok_and(|s| s == AudioSessionStateActive);
+                    let active = control
+                        .GetState()
+                        .is_ok_and(|s| s == AudioSessionStateActive);
                     out.push(CaptureSession { pid, active });
                 }
             }
@@ -94,7 +109,12 @@ impl Probe {
         }
         if self.chain_cache.0 != pids {
             let procs = sys::snapshot_processes();
-            let users = pids.iter().map(|pid| MicUser { chain: chain_of(&procs, *pid) }).collect();
+            let users = pids
+                .iter()
+                .map(|pid| MicUser {
+                    chain: chain_of(&procs, *pid),
+                })
+                .collect();
             self.chain_cache = (pids, users);
         }
         self.chain_cache.1.clone()
@@ -157,7 +177,11 @@ impl Probe {
                 .clone();
             ctx.out.push(WindowInfo {
                 id: hwnd.0 as usize as u64,
-                owner: ProcInfo { pid, name, bundle_id: None },
+                owner: ProcInfo {
+                    pid,
+                    name,
+                    bundle_id: None,
+                },
                 title,
                 class,
                 width,
@@ -166,7 +190,10 @@ impl Probe {
             });
             true.into()
         }
-        let mut ctx = Ctx { out: Vec::new(), names: HashMap::new() };
+        let mut ctx = Ctx {
+            out: Vec::new(),
+            names: HashMap::new(),
+        };
         unsafe {
             let _ = EnumWindows(Some(each), LPARAM(&mut ctx as *mut Ctx as isize));
         }
@@ -177,11 +204,20 @@ impl Probe {
     pub fn diagnostics(&mut self) -> String {
         let mut s = String::new();
         let procs = sys::snapshot_processes();
-        let _ = writeln!(s, "-- プロセス（名前に zoom / teams / webview を含むもの） --");
+        let _ = writeln!(
+            s,
+            "-- プロセス（名前に zoom / teams / webview を含むもの） --"
+        );
         for p in &procs {
             let lower = p.name.to_lowercase();
-            if ["zoom", "teams", "webview"].iter().any(|k| lower.contains(k)) {
-                let parent = procs.iter().find(|q| q.pid == p.parent).map(|q| q.name.as_str());
+            if ["zoom", "teams", "webview"]
+                .iter()
+                .any(|k| lower.contains(k))
+            {
+                let parent = procs
+                    .iter()
+                    .find(|q| q.pid == p.parent)
+                    .map(|q| q.name.as_str());
                 let _ = writeln!(
                     s,
                     "pid={} parent={}({}) name={}",
@@ -199,7 +235,10 @@ impl Probe {
             let _ = writeln!(s, "(なし)");
         }
         for c in sessions {
-            let name = procs.iter().find(|p| p.pid == c.pid).map(|p| p.name.as_str());
+            let name = procs
+                .iter()
+                .find(|p| p.pid == c.pid)
+                .map(|p| p.name.as_str());
             let _ = writeln!(
                 s,
                 "pid={} name={} active={}{}",
@@ -219,11 +258,17 @@ pub fn chain_of(procs: &[ProcEntry], pid: u32) -> Vec<ProcInfo> {
     let mut chain = Vec::new();
     let mut cur = pid;
     while chain.len() <= MAX_ANCESTORS {
-        let Some(p) = procs.iter().find(|p| p.pid == cur) else { break };
+        let Some(p) = procs.iter().find(|p| p.pid == cur) else {
+            break;
+        };
         if chain.iter().any(|c: &ProcInfo| c.pid == p.pid) {
             break;
         }
-        chain.push(ProcInfo { pid: p.pid, name: p.name.clone(), bundle_id: None });
+        chain.push(ProcInfo {
+            pid: p.pid,
+            name: p.name.clone(),
+            bundle_id: None,
+        });
         if p.parent == 0 || p.parent == p.pid {
             break;
         }
@@ -255,7 +300,9 @@ pub fn normalize_root_pid(pid: u32, fallback: Option<u32>) -> u32 {
         }
     };
     for _ in 0..16 {
-        let Some(me) = procs.iter().find(|e| e.pid == cur) else { break };
+        let Some(me) = procs.iter().find(|e| e.pid == cur) else {
+            break;
+        };
         let Some(parent) = procs.iter().find(|e| e.pid == me.parent && e.pid != me.pid) else {
             break;
         };
@@ -293,5 +340,8 @@ pub fn microphone_allowed() -> bool {
     let desktop = consent_value(w!(
         "Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone\\NonPackaged"
     ));
-    ![global, desktop].iter().flatten().any(|v| v.eq_ignore_ascii_case("Deny"))
+    ![global, desktop]
+        .iter()
+        .flatten()
+        .any(|v| v.eq_ignore_ascii_case("Deny"))
 }

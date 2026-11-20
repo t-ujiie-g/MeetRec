@@ -110,8 +110,16 @@ pub fn proc_parent_and_name(pid: u32) -> Option<(u32, String)> {
         if n != size {
             return None;
         }
-        let raw = if info.pbi_name[0] != 0 { &info.pbi_name[..] } else { &info.pbi_comm[..] };
-        let bytes: Vec<u8> = raw.iter().take_while(|c| **c != 0).map(|c| *c as u8).collect();
+        let raw = if info.pbi_name[0] != 0 {
+            &info.pbi_name[..]
+        } else {
+            &info.pbi_comm[..]
+        };
+        let bytes: Vec<u8> = raw
+            .iter()
+            .take_while(|c| **c != 0)
+            .map(|c| *c as u8)
+            .collect();
         Some((info.pbi_ppid, String::from_utf8_lossy(&bytes).into_owned()))
     }
 }
@@ -137,6 +145,9 @@ pub fn all_pids() -> Vec<u32> {
             (pids.len() * size_of::<i32>()) as i32,
         );
         pids.truncate(n.max(0) as usize);
-        pids.into_iter().filter(|p| *p > 0).map(|p| p as u32).collect()
+        pids.into_iter()
+            .filter(|p| *p > 0)
+            .map(|p| p as u32)
+            .collect()
     }
 }

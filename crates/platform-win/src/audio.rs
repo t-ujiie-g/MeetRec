@@ -64,7 +64,11 @@ impl Format {
             }
             _ => return None,
         };
-        let ok = if float { bits == 32 } else { matches!(bits, 16 | 24 | 32) };
+        let ok = if float {
+            bits == 32
+        } else {
+            matches!(bits, 16 | 24 | 32)
+        };
         (ok && f.nChannels > 0 && f.nSamplesPerSec > 0).then_some(Format {
             rate: f.nSamplesPerSec,
             channels: f.nChannels,
@@ -82,17 +86,21 @@ impl Format {
         out.clear();
         match (self.float, self.bits) {
             (true, _) => out.extend(
-                data.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+                data.chunks_exact(4)
+                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
             ),
             (false, 16) => out.extend(
-                data.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0),
+                data.chunks_exact(2)
+                    .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0),
             ),
-            (false, 24) => out.extend(data.chunks_exact(3).map(|b| {
-                (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32 / 8_388_608.0
-            })),
-            _ => out.extend(data.chunks_exact(4).map(|b| {
-                i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0
-            })),
+            (false, 24) => out
+                .extend(data.chunks_exact(3).map(|b| {
+                    (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32 / 8_388_608.0
+                })),
+            _ => out
+                .extend(data.chunks_exact(4).map(|b| {
+                    i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0
+                })),
         }
     }
 }
@@ -132,7 +140,8 @@ unsafe fn capture_loop(
                         || flags & BUFFERFLAGS_TIMESTAMP_ERROR != 0
                         || pts.abs_diff(now) > 1_000_000_000
                     {
-                        pts = now.saturating_sub(frames as u64 * 1_000_000_000 / format.rate as u64);
+                        pts =
+                            now.saturating_sub(frames as u64 * 1_000_000_000 / format.rate as u64);
                     }
                     holder.with(|s| s.push_pcm(source, pts, format.rate, format.channels, &pcm));
                 }
@@ -197,8 +206,10 @@ unsafe fn activate_loopback(pid: u32) -> WinResult<IAudioClient> {
         &handler,
     )?;
     let guard = done.0.lock().unwrap();
-    let (guard, _) =
-        done.1.wait_timeout_while(guard, Duration::from_secs(5), |finished| !*finished).unwrap();
+    let (guard, _) = done
+        .1
+        .wait_timeout_while(guard, Duration::from_secs(5), |finished| !*finished)
+        .unwrap();
     if !*guard {
         return Err(E_FAIL.into());
     }
@@ -207,14 +218,21 @@ unsafe fn activate_loopback(pid: u32) -> WinResult<IAudioClient> {
     let mut unknown = None;
     operation.GetActivateResult(&mut hr, &mut unknown)?;
     hr.ok()?;
-    unknown.ok_or_else(|| windows::core::Error::from(E_FAIL))?.cast()
+    unknown
+        .ok_or_else(|| windows::core::Error::from(E_FAIL))?
+        .cast()
 }
 
 /// 会議アプリ（子プロセスを含むツリー）が出す音だけを録る。Windows 10 2004 以降。
 pub fn run_loopback(holder: Arc<Holder>, stop: Arc<AtomicBool>, pid: u32) {
     sys::com_init_mta();
     // プロセスループバックはミックスフォーマットを問い合わせられないので自分で指定する。
-    let format = Format { rate: 48_000, channels: 2, bits: 16, float: false };
+    let format = Format {
+        rate: 48_000,
+        channels: 2,
+        bits: 16,
+        float: false,
+    };
     let wave = WAVEFORMATEX {
         wFormatTag: WAVE_FORMAT_PCM,
         nChannels: format.channels,

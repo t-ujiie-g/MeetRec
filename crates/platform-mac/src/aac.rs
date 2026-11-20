@@ -14,9 +14,8 @@ use objc2_audio_toolbox::{
     AudioConverterRef, AudioConverterSetProperty,
 };
 use objc2_core_audio_types::{
-    kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked, kAudioFormatLinearPCM,
-    kAudioFormatMPEG4AAC, AudioBuffer, AudioBufferList, AudioStreamBasicDescription,
-    AudioStreamPacketDescription,
+    kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked, kAudioFormatLinearPCM, kAudioFormatMPEG4AAC,
+    AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioStreamPacketDescription,
 };
 
 /// 入力コールバックが「今は渡せるデータがない」ことを伝えるための独自ステータス。
@@ -83,7 +82,12 @@ fn asc_from_cookie(cookie: &[u8]) -> Option<Vec<u8>> {
         match tag {
             0x03 => i += 3,  // ES_ID(2) + flags(1)。中身（0x04）へ進む。
             0x04 => i += 13, // DecoderConfig の固定部。中身（0x05）へ進む。
-            0x05 => return cookie.get(i..i + len).map(<[u8]>::to_vec).filter(|a| a.len() >= 2),
+            0x05 => {
+                return cookie
+                    .get(i..i + len)
+                    .map(<[u8]>::to_vec)
+                    .filter(|a| a.len() >= 2)
+            }
             _ => i += len,
         }
     }
@@ -117,12 +121,21 @@ impl MacAac {
         let mut conv: AudioConverterRef = std::ptr::null_mut();
         // SAFETY: 有効な ASBD と出力ポインタを渡す。
         let status = unsafe {
-            AudioConverterNew(NonNull::from(&mut src), NonNull::from(&mut dst), NonNull::from(&mut conv))
+            AudioConverterNew(
+                NonNull::from(&mut src),
+                NonNull::from(&mut dst),
+                NonNull::from(&mut conv),
+            )
         };
         if status != 0 || conv.is_null() {
             return Err(format!("AudioConverterNew 失敗 (OSStatus {status})"));
         }
-        let mut this = MacAac { conv, asc: vec![0x11, 0x90], pcm: vec![0.0; FRAME_LEN], out: Vec::new() };
+        let mut this = MacAac {
+            conv,
+            asc: vec![0x11, 0x90],
+            pcm: vec![0.0; FRAME_LEN],
+            out: Vec::new(),
+        };
         // SAFETY: conv は有効。各プロパティは u32 またはバイト列。
         unsafe {
             let mut rate = bitrate;
@@ -143,7 +156,11 @@ impl MacAac {
                 NonNull::from(&mut size),
                 NonNull::from(&mut max_packet).cast(),
             );
-            let max_packet = if st == 0 && max_packet > 0 { max_packet as usize } else { 8192 };
+            let max_packet = if st == 0 && max_packet > 0 {
+                max_packet as usize
+            } else {
+                8192
+            };
             this.out = vec![0u8; max_packet.max(2048)];
 
             let mut cookie = [0u8; 256];
@@ -165,7 +182,11 @@ impl MacAac {
 
     /// 入力を与えて、出せるだけパケットを取り出す。
     fn fill(&mut self, frames: u32, eof: bool) -> Result<Vec<Vec<u8>>, String> {
-        let mut input = Input { data: self.pcm.as_ptr(), frames, eof };
+        let mut input = Input {
+            data: self.pcm.as_ptr(),
+            frames,
+            eof,
+        };
         let mut packets = Vec::new();
         // 1 回の入力で出るのは高々数パケット。念のため上限を置く。
         for _ in 0..16 {
@@ -205,7 +226,9 @@ impl MacAac {
                 break;
             }
             if status != 0 {
-                return Err(format!("AudioConverterFillComplexBuffer 失敗 (OSStatus {status})"));
+                return Err(format!(
+                    "AudioConverterFillComplexBuffer 失敗 (OSStatus {status})"
+                ));
             }
         }
         Ok(packets)

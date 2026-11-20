@@ -114,7 +114,13 @@ impl Tray {
 
         let record = menu_item(mtm, text::MENU_RECORD_NOW, TAG_RECORD, target, action);
         menu.addItem(&record);
-        menu.addItem(&menu_item(mtm, text::MENU_OPEN_FOLDER, TAG_OPEN, target, action));
+        menu.addItem(&menu_item(
+            mtm,
+            text::MENU_OPEN_FOLDER,
+            TAG_OPEN,
+            target,
+            action,
+        ));
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         let mode_parent = menu_item(mtm, text::MENU_MODE, 0, target, action);
@@ -135,7 +141,13 @@ impl Tray {
 
         let autostart = menu_item(mtm, text::MENU_AUTOSTART, TAG_AUTOSTART, target, action);
         menu.addItem(&autostart);
-        menu.addItem(&menu_item(mtm, text::MENU_DIAGNOSTICS, TAG_DIAG, target, action));
+        menu.addItem(&menu_item(
+            mtm,
+            text::MENU_DIAGNOSTICS,
+            TAG_DIAG,
+            target,
+            action,
+        ));
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&menu_item(mtm, text::MENU_QUIT, TAG_QUIT, target, action));
 
@@ -157,13 +169,23 @@ impl Tray {
 
     fn set_icon(&self, recording: bool) {
         if let Some(button) = self.item.button(self.mtm) {
-            button.setImage(Some(if recording { &self.rec_icon } else { &self.idle_icon }));
+            button.setImage(Some(if recording {
+                &self.rec_icon
+            } else {
+                &self.idle_icon
+            }));
             button.setToolTip(Some(&NSString::from_str(text::APP_NAME)));
         }
     }
 
     pub fn set(&self, model: &TrayModel) {
-        let on_off = |on: bool| if on { NSControlStateValueOn } else { NSControlStateValueOff };
+        let on_off = |on: bool| {
+            if on {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            }
+        };
         self.status.setTitle(&NSString::from_str(&model.status));
         let (title, tag) = if model.recording {
             (text::MENU_STOP, TAG_STOP)

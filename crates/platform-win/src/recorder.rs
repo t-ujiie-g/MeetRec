@@ -71,7 +71,10 @@ impl Recorder {
         // 音声を録るプロセスツリーの根を決める（0・不在・子プロセス指定への備え）。
         let root_pid =
             probe::normalize_root_pid(req.root_pid, req.window.as_ref().map(|w| w.owner.pid));
-        meetrec_core::info!("音声の対象プロセス: 指定 pid={} → ルート pid={root_pid}", req.root_pid);
+        meetrec_core::info!(
+            "音声の対象プロセス: 指定 pid={} → ルート pid={root_pid}",
+            req.root_pid
+        );
 
         let s = &req.settings;
         let mut cfg = SessionConfig::new(req.path.clone(), req.marker_dir.clone());
@@ -112,7 +115,9 @@ impl Recorder {
 
         if root_pid != 0 {
             let (h, st) = (holder.clone(), stop.clone());
-            workers.extend(spawn("loopback", move || audio::run_loopback(h, st, root_pid)));
+            workers.extend(spawn("loopback", move || {
+                audio::run_loopback(h, st, root_pid)
+            }));
         } else {
             meetrec_core::warn!("対象プロセスが不明のため相手音声は録音しません");
         }
@@ -133,7 +138,13 @@ impl Recorder {
             workers.extend(spawn("video", move || video::run(h, sh, params)));
             video_shared = Some(shared);
         }
-        Ok(Recorder { holder, stop, video: video_shared, workers, root_pid })
+        Ok(Recorder {
+            holder,
+            stop,
+            video: video_shared,
+            workers,
+            root_pid,
+        })
     }
 
     pub fn retarget(&self, window: &WindowInfo) {
@@ -161,7 +172,8 @@ impl Recorder {
             v.wake();
         }
         let deadline = Instant::now() + STOP_TIMEOUT;
-        while Instant::now() < deadline && !self.workers.iter().all(|w| w.done.load(Ordering::SeqCst))
+        while Instant::now() < deadline
+            && !self.workers.iter().all(|w| w.done.load(Ordering::SeqCst))
         {
             std::thread::sleep(Duration::from_millis(10));
         }

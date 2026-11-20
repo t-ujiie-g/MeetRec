@@ -33,8 +33,9 @@ define_class!(
             handler: &block2::DynBlock<dyn Fn(UNNotificationPresentationOptions)>,
         ) {
             // 常駐アプリは「前面」扱いになるため、明示しないとバナーが出ない。
-            handler.call((UNNotificationPresentationOptions::Banner
-                | UNNotificationPresentationOptions::List,));
+            handler
+                .call((UNNotificationPresentationOptions::Banner
+                    | UNNotificationPresentationOptions::List,));
         }
 
         #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
@@ -73,7 +74,11 @@ impl Notifier {
         // バンドル ID がないと currentNotificationCenter が例外を投げる。
         if NSBundle::mainBundle().bundleIdentifier().is_none() {
             meetrec_core::warn!("アプリバンドル外で実行されているため通知は無効です");
-            return Notifier { center: None, _delegate: None, seq: 0 };
+            return Notifier {
+                center: None,
+                _delegate: None,
+                seq: 0,
+            };
         }
         let center = UNUserNotificationCenter::currentNotificationCenter();
         let delegate: Retained<NotifyDelegate> =
@@ -82,13 +87,21 @@ impl Notifier {
         let handler = RcBlock::new(|granted: Bool, error: *mut NSError| {
             // SAFETY: error は nil か有効な NSError。
             let err = unsafe { error.as_ref() }.map(|e| e.localizedDescription().to_string());
-            meetrec_core::info!("通知の許可: {} {}", granted.as_bool(), err.unwrap_or_default());
+            meetrec_core::info!(
+                "通知の許可: {} {}",
+                granted.as_bool(),
+                err.unwrap_or_default()
+            );
         });
         center.requestAuthorizationWithOptions_completionHandler(
             UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
             &handler,
         );
-        Notifier { center: Some(center), _delegate: Some(delegate), seq: 0 }
+        Notifier {
+            center: Some(center),
+            _delegate: Some(delegate),
+            seq: 0,
+        }
     }
 
     pub fn notify(&mut self, notice: &Notice) {
@@ -108,7 +121,8 @@ impl Notifier {
         }
         self.seq += 1;
         let id = NSString::from_str(&format!("meetrec-{}-{}", std::process::id(), self.seq));
-        let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&id, &content, None);
+        let request =
+            UNNotificationRequest::requestWithIdentifier_content_trigger(&id, &content, None);
         let handler = RcBlock::new(|error: *mut NSError| {
             // SAFETY: error は nil か有効な NSError。
             if let Some(e) = unsafe { error.as_ref() } {
