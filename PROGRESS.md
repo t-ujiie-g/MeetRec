@@ -11,7 +11,7 @@
 
 ## 完了
 - M0：ワークスペース骨格、CI（ubuntu で core テスト、macos/windows で fmt・clippy・test・release ビルド・成果物）。
-- M1：core（ユニットテスト 83 件）
+- M1：core（ユニットテスト 84 件）
   - `rules` 会議アプリ定数表と照合、`detect` 検出状態機械、`controller` 全体制御（`Platform` をモックしてテスト）
   - `mp4` fragmented MP4 muxer と修復（ffmpeg で生成した実 H.264/AAC を mux し ffprobe/ffmpeg で再生確認済み）
   - `audio` ミキサ（リサンプル・ドリフト吸収・デバイス切替）、`session` 録画セッション
@@ -28,8 +28,15 @@
   **実測値との照合と最適化は未実施**（実機が必要）。
 - M7：`README.md`、`docs/manual-test.md`、`docs/signing.md`
 
+## CI の状態
+- コミット `f768eb8`（2026-11-20）で 3 ジョブ（core / macos-latest / windows-latest）とも緑。
+  成果物 `MeetRec-macos`（.app の zip、圧縮後 約 0.75MB）と `MeetRec-windows`（MeetRec.exe、圧縮後 約 0.3MB）が
+  ダウンロードできる。バイナリサイズは目標（20MB）を大きく下回る。
+- CI は Rust 1.97.0 に固定（`rust-toolchain.toml`）。新しい clippy の指摘で CI だけ赤になるのを防ぐため。
+- 緑が示すのは「ビルド・リンクできる」「core のテストが両 OS で通る」ことまで。起動・録画の動作は示さない。
+
 ## 次にやること
-1. CI が両 OS で緑になっていることを確認（赤なら直す）。← このセッションで確認する
+1. （済）CI が両 OS で緑。
 2. 実機で `docs/manual-test.md` を実施してもらい、診断ログをもとに `core::rules` の定数表と OS 層を修正。
 3. 実測値をもとに M6 の最適化（特に待機中 CPU：mac の App Nap 抑止、win の H.264 出力待ちポーリング）。
 4. 余力があれば：イベント駆動の検出（CoreAudio リスナ / WinEvent フック）、Windows インストーラ、アプリアイコン。
