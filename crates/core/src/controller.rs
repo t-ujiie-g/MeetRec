@@ -337,7 +337,12 @@ impl Controller {
                 rec.candidate = None;
             }
             // より点数の高いウィンドウが安定して存在する：張り替える。
-            (Some(c), Some(b)) if b.info.id != c.info.id && (b.score > c.score || !c.capture) => {
+            (Some(c), Some(b))
+                if b.info.id != c.info.id
+                    && (b.score > c.score
+                        || !c.capture
+                        || (c.info.minimized && !b.info.minimized)) =>
+            {
                 match rec.candidate {
                     Some((id, since)) if id == b.info.id => {
                         if now.saturating_sub(since) >= RETARGET_HOLD_NS {
@@ -1262,6 +1267,26 @@ mod tests {
         assert_eq!(h.count("retarget 9"), 0);
         h.tick();
         assert_eq!(h.count("retarget 9"), 1);
+        h.ticks(10);
+        assert_eq!(h.count("retarget"), 2);
+        assert!(h.c.is_recording());
+    }
+
+    #[test]
+    fn minimized_meeting_switches_to_mini_window_and_back() {
+        let mut h = H::new("ctl-mini", Mode::Auto);
+        h.join();
+        h.ticks(3);
+        // 会議ウィンドウを最小化すると Zoom がミニウィンドウを出す：映っている方へ張り替える。
+        h.p.windows[0].minimized = true;
+        h.p.windows
+            .push(win(5, zoom(), "", "ZPFloatVideoWndClass", 240, 135));
+        h.ticks(2);
+        assert_eq!(h.count("retarget 5"), 1);
+        // 元に戻したら会議ウィンドウへ戻す。
+        h.p.windows[0].minimized = false;
+        h.ticks(2);
+        assert_eq!(h.count("retarget 1"), 1);
         h.ticks(10);
         assert_eq!(h.count("retarget"), 2);
         assert!(h.c.is_recording());
