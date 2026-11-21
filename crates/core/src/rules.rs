@@ -229,15 +229,17 @@ impl Observation {
             .map(|(_, p)| *p)
     }
 
-    /// 録画対象として最良のウィンドウ（点数 → 非最小化 → 面積の順）。
+    /// 録画対象として最良のウィンドウ（非最小化 → 点数 → 面積の順）。
+    /// 最小化中のウィンドウは映像が止まるので、映っているウィンドウ（Zoom のミニウィンドウ等）
+    /// があればそちらを優先する。
     pub fn best_window(&self, app: usize, min_score: i32) -> Option<&ScoredWindow> {
         self.windows
             .iter()
             .filter(|w| w.app == app && w.capture && w.score >= min_score)
             .max_by_key(|w| {
                 (
-                    w.score,
                     !w.info.minimized,
+                    w.score,
                     w.info.width as u64 * w.info.height as u64,
                 )
             })
