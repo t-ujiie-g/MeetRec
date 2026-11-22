@@ -49,6 +49,7 @@ use crate::prompt::Prompt;
 use crate::recorder::Recorder;
 use crate::sys::{self, wide};
 use crate::tray::{self, Tray};
+use crate::uia;
 
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_PROMPT_ANSWER: u32 = WM_APP + 2;
@@ -58,6 +59,8 @@ const WM_PERMISSIONS: u32 = WM_APP + 4;
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 
 const TIMER_TICK: usize = 1;
+/// 診断ログに画面部品を書き出すウィンドウの上限（書き出しはウィンドウごとに時間がかかる）。
+const MAX_CONTROL_DUMP_WINDOWS: usize = 8;
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const RUN_VALUE: PCWSTR = w!("MeetRec");
 
@@ -412,6 +415,17 @@ impl Platform for WinPlatform {
         if let Some(r) = &self.recorder {
             s.push_str(&r.diagnostics());
         }
+        // ミュートボタンなどの見え方を実機で調べるための書き出し（会議アプリの部品の名前だけ）。
+        let windows: Vec<(isize, String)> = self
+            .probe
+            .windows()
+            .into_iter()
+            .filter(|w| !w.minimized && probe::is_meeting_app_name(&w.owner.name))
+            .take(MAX_CONTROL_DUMP_WINDOWS)
+            .map(|w| (w.id as isize, format!("{:?} class={:?}", w.title, w.class)))
+            .collect();
+        s.push_str("-- 会議アプリの画面部品 --\n");
+        s.push_str(&uia::dump_controls(&windows));
         s
     }
 
@@ -566,6 +580,18 @@ impl Platform for WinPlatform {
     fn end_screen(&mut self) {
         if let Some(r) = &self.recorder {
             r.hide_screen();
+        }
+    }
+
+    fn find_control(&mut self, _pid: u32, _names: &[String]) -> Option<String> {
+        // 未対応：Windows の Zoom / Teams で部品がどう見えるかを、診断ログ（`uia::dump_controls`）で
+        // 確かめてから実装する。それまでは「分からない」を返し、core は自分の声を録り続ける。
+        None
+    }
+
+    fn set_mic_enabled(&mut self, enabled: bool) {
+        if let Some(r) = &self.recorder {
+            r.set_mic_enabled(enabled);
         }
     }
 

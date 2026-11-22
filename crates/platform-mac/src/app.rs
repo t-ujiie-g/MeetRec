@@ -30,6 +30,7 @@ use objc2_foundation::{
 };
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
+use crate::ax::ControlWatch;
 use crate::capture::Recorder;
 use crate::notify::Notifier;
 use crate::probe::Probe;
@@ -235,6 +236,7 @@ impl Delegate {
             tray: Tray::new(mtm, target),
             notifier: Notifier::new(),
             probe: Probe::default(),
+            controls: ControlWatch::default(),
             recorder: None,
         };
         STATE.with(|s| *s.borrow_mut() = Some(State { app, platform }));
@@ -276,6 +278,7 @@ pub struct MacPlatform {
     tray: Tray,
     notifier: Notifier,
     probe: Probe,
+    controls: ControlWatch,
     recorder: Option<Recorder>,
 }
 
@@ -496,6 +499,16 @@ impl Platform for MacPlatform {
     fn end_screen(&mut self) {
         if let Some(recorder) = self.recorder.as_mut() {
             recorder.hide_screen();
+        }
+    }
+
+    fn find_control(&mut self, pid: u32, names: &[String]) -> Option<String> {
+        self.controls.find(pid, names)
+    }
+
+    fn set_mic_enabled(&mut self, enabled: bool) {
+        if let Some(recorder) = self.recorder.as_ref() {
+            recorder.set_mic_enabled(enabled);
         }
     }
 

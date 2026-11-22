@@ -175,6 +175,11 @@ impl Recorder {
         true
     }
 
+    /// 自分のマイクを録る・録らないを切り替える（マイクは開いたまま、録らない間は無音にする）。
+    pub fn set_mic_enabled(&self, enabled: bool) {
+        self.holder.with(|s| s.set_mic_enabled(enabled));
+    }
+
     /// 画面の録画をやめる（張り替え先のウィンドウがないとき）。
     pub fn hide_screen(&self) {
         if let Some(v) = &self.video {

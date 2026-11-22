@@ -741,6 +741,13 @@ impl Recorder {
         }
     }
 
+    /// 自分のマイクを録る・録らないを切り替える（マイクは開いたまま、録らない間は無音にする）。
+    pub fn set_mic_enabled(&self, enabled: bool) {
+        if let Some(active) = self.slot.lock().unwrap().as_ref() {
+            active.session.set_mic_enabled(enabled);
+        }
+    }
+
     fn use_screen(&self, on: bool) {
         if let Some(active) = self.slot.lock().unwrap().as_mut() {
             active.use_screen = on;

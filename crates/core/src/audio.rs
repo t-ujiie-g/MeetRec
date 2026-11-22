@@ -68,6 +68,8 @@ pub struct Mixer {
     latency: u64,
     frames_out: u64,
     scratch: Vec<[f32; 2]>,
+    /// 入力を捨てる音源（録画中にマイクを止めるため）。捨てた区間は無音になる。
+    muted: Vec<bool>,
 }
 
 impl Mixer {
@@ -79,7 +81,13 @@ impl Mixer {
             latency: OUT_RATE as u64 * latency_ms as u64 / 1000,
             frames_out: 0,
             scratch: Vec::new(),
+            muted: vec![false; sources],
         }
+    }
+
+    /// 音源の入力を捨てる・戻す。捨てている間、その音源は無音として混ぜられる。
+    pub fn set_muted(&mut self, source: usize, muted: bool) {
+        self.muted[source] = muted;
     }
 
     pub fn stats(&self) -> MixerStats {
@@ -95,7 +103,7 @@ impl Mixer {
     pub fn push(&mut self, source: usize, pts_ns: u64, rate: u32, channels: u16, data: &[f32]) {
         let ch = channels as usize;
         // 1 フレームに満たない入力（チャンネル数より短い）も捨てる。
-        if rate == 0 || ch == 0 || data.len() < ch {
+        if rate == 0 || ch == 0 || data.len() < ch || self.muted[source] {
             return;
         }
         let emitted = self.emitted;
@@ -374,6 +382,22 @@ mod tests {
         assert_eq!(n, 10);
         m.pull(1250 * MS, false, 1000, |_, _| n += 1);
         assert_eq!(n, 48_000 / FRAME);
+    }
+
+    #[test]
+    fn muted_source_is_silent_until_unmuted() {
+        let mut m = Mixer::new(1, 0);
+        // 0.6 秒ぶんを 10ms ずつ投入し、0.2〜0.4 秒の間だけ止める。
+        for k in 0..60u64 {
+            m.set_muted(0, (20..40).contains(&k));
+            let data = sine(48_000, 440.0, k * 480, 480, 2);
+            m.push(0, k * 10 * MS, 48_000, 2, &data);
+        }
+        let (mix, _) = collect(&mut m, 700 * MS, true);
+        let at = |ms: usize| ms * 48 * 2;
+        assert!(rms(&mix[at(20)..at(180)]) > 0.3);
+        assert!(rms(&mix[at(220)..at(380)]) < 1e-6);
+        assert!(rms(&mix[at(420)..at(580)]) > 0.3);
     }
 
     #[test]

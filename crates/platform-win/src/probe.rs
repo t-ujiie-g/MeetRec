@@ -24,6 +24,14 @@ use crate::sys::{self, ProcEntry};
 /// 祖先をたどる最大段数（本人を含まない）。
 const MAX_ANCESTORS: usize = 5;
 
+/// 診断ログに載せる対象か（プロセス名に zoom / teams / webview を含む）。判定には使わない。
+pub fn is_meeting_app_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    ["zoom", "teams", "webview"]
+        .iter()
+        .any(|k| lower.contains(k))
+}
+
 pub struct Probe {
     enumerator: Option<IMMDeviceEnumerator>,
     /// 直近のマイク使用 PID 集合と、その祖先チェーン（同じ集合の間は使い回す）。
@@ -212,11 +220,7 @@ impl Probe {
             "-- プロセス（名前に zoom / teams / webview を含むもの） --"
         );
         for p in &procs {
-            let lower = p.name.to_lowercase();
-            if ["zoom", "teams", "webview"]
-                .iter()
-                .any(|k| lower.contains(k))
-            {
+            if is_meeting_app_name(&p.name) {
                 let parent = procs
                     .iter()
                     .find(|q| q.pid == p.parent)

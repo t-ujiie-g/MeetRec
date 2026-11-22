@@ -21,6 +21,7 @@ const TAG_AUTOSTART: isize = 4;
 const TAG_DIAG: isize = 5;
 const TAG_QUIT: isize = 6;
 const TAG_FOLDER: isize = 7;
+const TAG_MIC: isize = 8;
 const TAG_MODE_ASK: isize = 10;
 const TAG_MODE_AUTO: isize = 11;
 const TAG_MODE_OFF: isize = 12;
@@ -31,6 +32,7 @@ pub fn action_for_tag(tag: isize) -> Option<MenuAction> {
         TAG_STOP => MenuAction::StopNow,
         TAG_OPEN => MenuAction::OpenFolder,
         TAG_FOLDER => MenuAction::ChooseFolder,
+        TAG_MIC => MenuAction::ToggleMic,
         TAG_AUTOSTART => MenuAction::ToggleAutostart,
         TAG_DIAG => MenuAction::SaveDiagnostics,
         TAG_QUIT => MenuAction::Quit,
@@ -76,6 +78,7 @@ pub struct Tray {
     record: Retained<NSMenuItem>,
     modes: [(Mode, Retained<NSMenuItem>); 3],
     autostart: Retained<NSMenuItem>,
+    mic: Retained<NSMenuItem>,
     idle_icon: Retained<NSImage>,
     rec_icon: Retained<NSImage>,
     mtm: MainThreadMarker,
@@ -148,6 +151,8 @@ impl Tray {
         mode_parent.setSubmenu(Some(&sub));
         menu.addItem(&mode_parent);
 
+        let mic = menu_item(mtm, text::MENU_MIC, TAG_MIC, target, action);
+        menu.addItem(&mic);
         let autostart = menu_item(mtm, text::MENU_AUTOSTART, TAG_AUTOSTART, target, action);
         menu.addItem(&autostart);
         menu.addItem(&menu_item(
@@ -168,6 +173,7 @@ impl Tray {
             record,
             modes,
             autostart,
+            mic,
             idle_icon: icon(false),
             rec_icon: icon(true),
             mtm,
@@ -207,6 +213,7 @@ impl Tray {
             item.setState(on_off(*mode == model.mode));
         }
         self.autostart.setState(on_off(model.autostart));
+        self.mic.setState(on_off(model.mic));
         self.set_icon(model.recording);
     }
 }

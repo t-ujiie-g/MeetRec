@@ -64,6 +64,32 @@ pub struct AppRule {
     pub title_strip: Vec<String>,
     /// 取り除いた結果がこれらに一致（大文字小文字無視）したらタイトルなし扱い。
     pub generic_titles: Vec<String>,
+    /// 会議アプリのミュート状態の見分け方。空なら見分けない（自分のマイクを録り続ける）。
+    pub mute: MuteRule,
+}
+
+/// 会議アプリのミュート状態を、画面部品（ボタン・メニュー項目）の名前で見分ける規則。
+/// 部品の名前は「押すとどうなるか」を表すので、「ミュートを解除」があればミュート中。
+/// 名前は完全一致（大文字小文字無視）で比べる。似た名前の別の部品（参加者のミュート解除など）と取り違えないため。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MuteRule {
+    /// この名前の部品があれば、自分はミュート中。
+    pub muted: Vec<String>,
+    /// この名前の部品があれば、自分はミュートしていない。
+    pub unmuted: Vec<String>,
+}
+
+impl MuteRule {
+    /// 探す部品の名前（両方の状態ぶん）。
+    pub fn names(&self) -> Vec<String> {
+        self.muted.iter().chain(&self.unmuted).cloned().collect()
+    }
+
+    /// 見つかった部品の名前から、ミュート中かを決める。
+    pub fn is_muted(&self, control: &str) -> bool {
+        self.muted.iter().any(|m| m.eq_ignore_ascii_case(control))
+    }
 }
 
 /// Teams 本体のウィンドウのタイトルになるタブ名。Windows は「<タブ名> | … | Microsoft Teams」、
@@ -181,6 +207,11 @@ pub fn builtin_rules() -> Vec<AppRule> {
                 "Zoom Workplace",
                 "zoom floating video window",
             ]),
+            // macOS：メニューバーの「ミーティング」にある項目（日本語は実機で確認。英語は未検証）。
+            mute: MuteRule {
+                muted: s(&["オーディオのミュート解除", "Unmute Audio"]),
+                unmuted: s(&["オーディオのミュート", "Mute Audio"]),
+            },
         },
         AppRule {
             id: "teams".into(),
@@ -267,6 +298,11 @@ pub fn builtin_rules() -> Vec<AppRule> {
                 "会議への参加  会議",
                 "Join a meeting  meeting",
             ]),
+            // macOS：会議ウィンドウのボタン（日本語は実機で確認。英語は未検証）。
+            mute: MuteRule {
+                muted: s(&["マイクのミュートを解除", "Unmute mic"]),
+                unmuted: s(&["マイクのミュート", "Mute mic"]),
+            },
         },
     ]
 }
@@ -636,6 +672,22 @@ pub(crate) mod tests {
         assert_eq!(r.score_window(teams, &popup), Some((40, true)));
         popup.layer = 101;
         assert_eq!(r.score_window(teams, &popup), None);
+    }
+
+    #[test]
+    fn mute_state_is_read_from_exact_control_names() {
+        let r = Rules::new(&[]);
+        let teams = &r.apps.iter().find(|a| a.id == "teams").unwrap().mute;
+        // 実機（macOS・日本語の Teams）で見えたボタンの名前。
+        assert!(teams.is_muted("マイクのミュートを解除"));
+        assert!(!teams.is_muted("マイクのミュート"));
+        // 実機（macOS・日本語の Zoom）で見えたメニュー項目の名前。
+        let zoom = &r.apps.iter().find(|a| a.id == "zoom").unwrap().mute;
+        assert!(zoom.is_muted("オーディオのミュート解除"));
+        assert!(!zoom.is_muted("オーディオのミュート"));
+        // 同じ画面にある別の部品（参加者向けの「ミュート解除」）は探す対象に入れない。
+        assert!(!teams.names().iter().any(|n| n == "ミュート解除"));
+        assert!(teams.names().contains(&"マイクのミュート".to_string()));
     }
 
     #[test]

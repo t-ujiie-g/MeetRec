@@ -97,6 +97,12 @@ struct Rec {
     candidate: Option<(u64, u64)>,
     gone_since: Option<u64>,
     audio_only_notified: bool,
+    /// 会議アプリ（マイクの状態を読む相手）のルート PID。
+    root_pid: Pid,
+    /// 会議アプリでミュート中と分かっている（分からないときは false）。
+    app_muted: bool,
+    /// いま自分のマイクを録っているか（設定とミュート状態から決めた結果）。
+    mic_on: bool,
     /// 自分の画面共有中で、共有している画面を録っている。
     screen: bool,
     /// 画面への切り替えに失敗した（この録画では再試行せず、ウィンドウの録画を続ける）。
@@ -389,6 +395,7 @@ impl Controller {
             self.start_for_meeting(p, m, &obs);
         }
         self.follow(p, &obs, now);
+        self.follow_mute(p);
         self.housekeeping(p, now);
         self.update_tray(p);
     }
@@ -564,6 +571,7 @@ impl Controller {
             status,
             mode: self.cfg.mode,
             autostart: p.autostart_enabled(),
+            mic: self.cfg.audio.capture_mic,
         };
         if self.last_tray.as_ref() != Some(&model) {
             p.set_tray(&model);
@@ -631,6 +639,9 @@ impl Controller {
                     path,
                     target: window.map(|w| w.id),
                     target_definite,
+                    root_pid,
+                    app_muted: false,
+                    mic_on: self.cfg.audio.capture_mic,
                     candidate: None,
                     gone_since: None,
                     audio_only_notified: false,
@@ -782,6 +793,13 @@ impl Controller {
                     self.notify(p, format!("{}: {e}", text::NOTICE_AUTOSTART_FAILED), None);
                 }
             }
+            MenuAction::ToggleMic => {
+                self.cfg.audio.capture_mic = !self.cfg.audio.capture_mic;
+                crate::info!("自分の声を録る: {}", self.cfg.audio.capture_mic);
+                self.save_config();
+                // 録画中ならすぐ反映する。マイクを開かずに始めた録画では、オンにしても次の録画から。
+                self.apply_mic(p);
+            }
             MenuAction::SaveDiagnostics => self.save_diagnostics(p),
             MenuAction::Quit => {
                 self.hide_prompt(p);
@@ -789,6 +807,46 @@ impl Controller {
                 crate::info!("終了");
                 p.quit();
             }
+        }
+    }
+
+    /// 録画中：会議アプリのミュート状態を読み、マイクを録るかどうかに反映する（D35）。
+    /// 状態が分からないときは「ミュートしていない」として扱う（自分の発言を録り逃さないため）。
+    fn follow_mute(&mut self, p: &mut dyn Platform) {
+        let Some(rec) = self.rec.as_mut() else { return };
+        let audio = &self.cfg.audio;
+        if !audio.capture_mic || !audio.follow_app_mute {
+            return;
+        }
+        let rule = &self.rules.apps[rec.app].mute;
+        let names = rule.names();
+        if names.is_empty() {
+            return;
+        }
+        let muted = p
+            .find_control(rec.root_pid, &names)
+            .is_some_and(|name| rule.is_muted(&name));
+        if muted != rec.app_muted {
+            rec.app_muted = muted;
+            crate::info!(
+                "会議アプリのミュート: {}",
+                if muted {
+                    "ミュート中（自分の声を録らない）"
+                } else {
+                    "解除（自分の声を録る）"
+                }
+            );
+            self.apply_mic(p);
+        }
+    }
+
+    /// 設定（自分の声を録る）とミュート状態から、マイクを録るかを決めて OS 層に伝える。
+    fn apply_mic(&mut self, p: &mut dyn Platform) {
+        let Some(rec) = self.rec.as_mut() else { return };
+        let want = self.cfg.audio.capture_mic && !rec.app_muted;
+        if rec.mic_on != want {
+            rec.mic_on = want;
+            p.set_mic_enabled(want);
         }
     }
 
@@ -1050,6 +1108,8 @@ mod tests {
         calls: Vec<String>,
         chosen: Option<PathBuf>,
         screen_ok: bool,
+        /// 会議アプリに今あるミュートの部品の名前。
+        control: Option<String>,
         notices: Vec<Notice>,
         tray: Vec<TrayModel>,
     }
@@ -1141,6 +1201,12 @@ mod tests {
         }
         fn end_screen(&mut self) {
             self.calls.push("end_screen".into());
+        }
+        fn set_mic_enabled(&mut self, enabled: bool) {
+            self.calls.push(format!("mic {enabled}"));
+        }
+        fn find_control(&mut self, _: Pid, names: &[String]) -> Option<String> {
+            self.control.clone().filter(|c| names.contains(c))
         }
         fn stop_recording(&mut self) -> Option<RecordingSummary> {
             let req = self.recording.take()?;
@@ -1415,6 +1481,52 @@ mod tests {
         h.p.windows.clear();
         h.ticks(5);
         assert!(!h.c.is_recording());
+    }
+
+    #[test]
+    fn mic_toggle_is_saved_and_applied_to_the_running_recording() {
+        let mut h = H::new("ctl-mic", Mode::Auto);
+        h.join();
+        h.ticks(3);
+        assert!(h.p.recording.as_ref().unwrap().settings.capture_mic);
+        h.ev(UiEvent::Menu(MenuAction::ToggleMic));
+        assert_eq!(h.count("mic false"), 1);
+        assert!(!Config::load(&h.dirs.config_file()).0.audio.capture_mic);
+        assert!(!h.p.tray.last().unwrap().mic);
+        h.ev(UiEvent::Menu(MenuAction::ToggleMic));
+        assert_eq!(h.count("mic true"), 1);
+        assert!(h.p.tray.last().unwrap().mic);
+    }
+
+    #[test]
+    fn mic_follows_the_meeting_app_mute_button() {
+        let mut h = H::new("ctl-mute", Mode::Auto);
+        h.join_teams_mac();
+        // 部品が読めない間は録り続ける。
+        assert_eq!(h.count("mic"), 0);
+        // ミュート中：ボタンは「解除」を表す。
+        h.p.control = Some("マイクのミュートを解除".into());
+        h.ticks(2);
+        assert_eq!(h.count("mic false"), 1);
+        // ミュート中に「自分の声を録る」をオフ → オンにしても、ミュートが解けるまでは録らない。
+        h.ev(UiEvent::Menu(MenuAction::ToggleMic));
+        h.ev(UiEvent::Menu(MenuAction::ToggleMic));
+        assert_eq!(h.count("mic true"), 0);
+        // 解除：録り始める。
+        h.p.control = Some("マイクのミュート".into());
+        h.tick();
+        assert_eq!(h.count("mic true"), 1);
+        // ミュート中に部品が読めなくなったら、録る側に倒す。
+        h.p.control = Some("マイクのミュートを解除".into());
+        h.tick();
+        h.p.control = None;
+        h.tick();
+        assert_eq!(h.count("mic true"), 2);
+        // 設定でオフにしていれば、ミュートには合わせない。
+        h.c.cfg.audio.follow_app_mute = false;
+        h.p.control = Some("マイクのミュートを解除".into());
+        h.ticks(2);
+        assert_eq!(h.count("mic false"), 2);
     }
 
     #[test]

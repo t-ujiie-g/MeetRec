@@ -6,6 +6,7 @@
 //! - `probe`：マイク使用プロセスとウィンドウの観測
 //! - `recorder`：録画の開始・停止（`video` / `audio` スレッドの管理）
 //! - `capture` / `convert` / `h264enc`：WGC → D3D11 Video Processor → H.264 MFT
+//! - `uia`：会議アプリの画面部品（ミュートボタンなど）の読み取り（UI オートメーション）
 //! - `audio` / `aac`：WASAPI（プロセスループバック・マイク）と AAC MFT
 
 mod aac;
@@ -19,6 +20,7 @@ mod prompt;
 mod recorder;
 mod sys;
 mod tray;
+mod uia;
 mod video;
 
 use meetrec_core::platform::App;

@@ -5,11 +5,13 @@
 //! - `panel`：`prompt` と `toast` が使う、フォーカスを奪わないパネルの共通部分
 //! - `probe`：マイク使用プロセス（CoreAudio）とウィンドウ一覧（CGWindowList）
 //! - `capture` / `encoder` / `aac`：ScreenCaptureKit → VideoToolbox / AudioConverter → core::session
+//! - `ax`：会議アプリの画面部品（ミュートボタンなど）の読み取り（アクセシビリティ API）
 //! - `sys`：時計・プロセス情報・自己計測
 #![cfg(target_os = "macos")]
 
 mod aac;
 mod app;
+mod ax;
 mod capture;
 mod encoder;
 mod notify;

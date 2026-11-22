@@ -534,6 +534,16 @@ impl Session {
             .push(source, rel, rate, channels, data);
     }
 
+    /// 自分のマイクを録る・録らないを切り替える（録画中にいつでも呼べる）。
+    /// 録らない間、マイクの音は無音として扱う（別トラック保存のマイクのトラックも無音になる）。
+    pub fn set_mic_enabled(&self, enabled: bool) {
+        self.shared
+            .mixer
+            .lock()
+            .unwrap()
+            .set_muted(SRC_MIC, !enabled);
+    }
+
     /// エンコーダ出力（Annex B の 1 アクセスユニット）を投入する。
     pub fn push_video_annexb(&self, pts_ns: u64, width: u32, height: u32, data: &[u8]) {
         let au = h264::annexb_to_avcc(data);
