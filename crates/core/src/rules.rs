@@ -540,12 +540,13 @@ impl Rules {
             if strip.is_empty() {
                 continue;
             }
-            // 大文字小文字を無視して取り除く。
-            let lower = t.to_lowercase();
-            if let Some(pos) = lower.find(&strip.to_lowercase())
-                && t.is_char_boundary(pos)
-                && t.is_char_boundary(pos + strip.len())
-            {
+            // 大文字小文字を無視して、出てくるぶんをすべて取り除く（Windows の Teams の参加前の画面は
+            // 「… | Microsoft Teams 会議 | Microsoft Teams」と 2 回含む）。
+            let needle = strip.to_lowercase();
+            while let Some(pos) = t.to_lowercase().find(&needle) {
+                if !(t.is_char_boundary(pos) && t.is_char_boundary(pos + strip.len())) {
+                    break;
+                }
                 t.replace_range(pos..pos + strip.len(), "");
             }
         }
@@ -815,6 +816,15 @@ pub(crate) mod tests {
         assert_eq!(
             r.meeting_title(1, "会議への参加 | Microsoft Teams 会議"),
             None
+        );
+        // Windows（実機で確認）：参加前の画面は「| Microsoft Teams」を 2 回含む。
+        assert_eq!(
+            r.meeting_title(1, "会議への参加 | Microsoft Teams 会議 | Microsoft Teams"),
+            None
+        );
+        assert_eq!(
+            r.meeting_title(1, "test | Microsoft Teams"),
+            Some("test".into())
         );
     }
 

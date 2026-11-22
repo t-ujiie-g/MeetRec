@@ -46,9 +46,10 @@ fn window_summary(obs: &Observation, app: usize) -> String {
         .filter(|w| w.app == app)
         .map(|w| {
             format!(
-                "[id={} {:?} {}x{} 階層={} 表示={} {}点 対象={}]",
+                "[id={} {:?} class={:?} {}x{} 階層={} 表示={} {}点 対象={}]",
                 w.info.id,
                 w.info.title,
+                w.info.class,
                 w.info.width,
                 w.info.height,
                 w.info.layer,
@@ -64,8 +65,8 @@ fn window_summary(obs: &Observation, app: usize) -> String {
             .filter(|(a, _)| *a == app)
             .map(|(_, w)| {
                 format!(
-                    "[id={} {:?} {}x{} 階層={} 規則なし]",
-                    w.id, w.title, w.width, w.height, w.layer
+                    "[id={} {:?} class={:?} {}x{} 階層={} 規則なし]",
+                    w.id, w.title, w.class, w.width, w.height, w.layer
                 )
             }),
     );
