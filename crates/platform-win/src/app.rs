@@ -6,36 +6,37 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use meetrec_core::platform::{
     App, LocalTime, MicUser, Notice, Permissions, Platform, PromptAnswer, PromptModel, RawUsage,
     RecordRequest, RecorderEvent, RecordingSummary, TrayModel, UiEvent, WindowInfo,
 };
 use meetrec_core::text;
-use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    GetLastError, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, FILETIME, HINSTANCE, HWND, LPARAM, LRESULT,
-    WPARAM,
+    ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, FILETIME, GetLastError, HINSTANCE,
+    HWND, LPARAM, LRESULT, WPARAM,
 };
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
     HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, GetProcessTimes};
-use windows::Win32::UI::Shell::{ShellExecuteW, NIN_BALLOONUSERCLICK, NIN_SELECT};
+use windows::Win32::UI::Shell::{NIN_BALLOONUSERCLICK, NIN_SELECT, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, KillTimer,
-    MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
-    SetCoalescableTimer, TranslateMessage, IDYES, MB_ICONINFORMATION, MB_SETFOREGROUND, MB_YESNO,
-    MSG, PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SW_SHOWNORMAL, WINDOW_EX_STYLE, WM_APP,
-    WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WM_POWERBROADCAST, WM_QUERYENDSESSION, WM_TIMER,
-    WNDCLASSEXW, WS_OVERLAPPED,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, IDYES,
+    KillTimer, MB_ICONINFORMATION, MB_SETFOREGROUND, MB_YESNO, MSG, MessageBoxW,
+    PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, PostMessageW, PostQuitMessage, RegisterClassExW,
+    RegisterWindowMessageW, SW_SHOWNORMAL, SetCoalescableTimer, TranslateMessage, WINDOW_EX_STYLE,
+    WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WM_POWERBROADCAST,
+    WM_QUERYENDSESSION, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPED,
 };
+use windows::core::{PCWSTR, w};
 
 use crate::probe::{self, Probe};
 use crate::prompt::Prompt;
@@ -45,14 +46,10 @@ use crate::tray::{self, Tray};
 
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_PROMPT_ANSWER: u32 = WM_APP + 2;
-pub const WM_RECORDER: u32 = WM_APP + 3;
+const WM_RECORDER: u32 = WM_APP + 3;
 const WM_PERMISSIONS: u32 = WM_APP + 4;
 /// NIN_KEYSELECT（キーボードでのアイコン選択）。
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
-
-/// `WM_RECORDER` の wParam。
-pub const REC_FAILED: usize = 1;
-pub const REC_VIDEO_UNAVAILABLE: usize = 2;
 
 const TIMER_TICK: usize = 1;
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -89,142 +86,153 @@ fn dispatch(ev: UiEvent) {
     });
 }
 
+/// ワーカースレッドからメインスレッドへ送る録画イベント。
+/// ウィンドウメッセージは他プロセスからも送れるので、メッセージにはポインタを載せず
+/// 「キューを見よ」という合図だけにする（偽のメッセージで不正なアドレスを触らせない）。
+static RECORDER_EVENTS: Mutex<VecDeque<RecorderEvent>> = Mutex::new(VecDeque::new());
+
 /// ワーカースレッドからメインスレッドへ録画イベントを送る。
-pub fn post_recorder_event(hwnd: isize, kind: usize, message: String) {
-    let raw = Box::into_raw(Box::new(message));
+pub fn post_recorder_event(hwnd: isize, event: RecorderEvent) {
+    RECORDER_EVENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push_back(event);
     unsafe {
-        if PostMessageW(
+        let _ = PostMessageW(
             Some(HWND(hwnd as *mut _)),
             WM_RECORDER,
-            WPARAM(kind),
-            LPARAM(raw as isize),
-        )
-        .is_err()
-        {
-            drop(Box::from_raw(raw));
-        }
+            WPARAM(0),
+            LPARAM(0),
+        );
     }
 }
 
+/// 処理中はロックを持たない（イベント処理の中から次のイベントが積まれることがある）。
+fn next_recorder_event() -> Option<RecorderEvent> {
+    RECORDER_EVENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .pop_front()
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    match msg {
-        WM_TIMER if wparam.0 == TIMER_TICK => {
-            dispatch(UiEvent::Tick);
-            LRESULT(0)
-        }
-        WM_TRAY => {
-            // NOTIFYICON_VERSION_4：イベント種別は lParam の下位ワード。
-            match (lparam.0 as u32) & 0xffff {
-                WM_CONTEXTMENU | NIN_SELECT | NIN_KEYSELECT => {
-                    let model = MAIN.with(|m| {
-                        m.try_borrow()
-                            .ok()
-                            .and_then(|g| g.as_ref().map(|x| x.plat.tray.model.clone()))
-                    });
-                    if let Some(model) = model {
-                        if let Some(action) = tray::show_menu(hwnd, &model) {
+    unsafe {
+        match msg {
+            WM_TIMER if wparam.0 == TIMER_TICK => {
+                dispatch(UiEvent::Tick);
+                LRESULT(0)
+            }
+            WM_TRAY => {
+                // NOTIFYICON_VERSION_4：イベント種別は lParam の下位ワード。
+                match (lparam.0 as u32) & 0xffff {
+                    WM_CONTEXTMENU | NIN_SELECT | NIN_KEYSELECT => {
+                        let model = MAIN.with(|m| {
+                            m.try_borrow()
+                                .ok()
+                                .and_then(|g| g.as_ref().map(|x| x.plat.tray.model.clone()))
+                        });
+                        if let Some(model) = model
+                            && let Some(action) = tray::show_menu(hwnd, &model)
+                        {
                             dispatch(UiEvent::Menu(action));
                         }
                     }
-                }
-                NIN_BALLOONUSERCLICK => {
-                    let path = MAIN.with(|m| {
-                        m.try_borrow()
-                            .ok()
-                            .and_then(|g| g.as_ref().and_then(|x| x.plat.last_open.clone()))
-                    });
-                    if let Some(path) = path {
-                        open_path(&path);
-                    }
-                }
-                _ => {}
-            }
-            LRESULT(0)
-        }
-        WM_PROMPT_ANSWER => {
-            let answer = match wparam.0 {
-                1 => PromptAnswer::Record {
-                    always: lparam.0 != 0,
-                },
-                _ => PromptAnswer::Skip,
-            };
-            dispatch(UiEvent::Prompt(answer));
-            LRESULT(0)
-        }
-        WM_RECORDER => {
-            let message = *Box::from_raw(lparam.0 as *mut String);
-            let ev = match wparam.0 {
-                REC_FAILED => RecorderEvent::Failed(message),
-                _ => RecorderEvent::VideoUnavailable(message),
-            };
-            dispatch(UiEvent::Recorder(ev));
-            LRESULT(0)
-        }
-        WM_PERMISSIONS => {
-            let text = wide(
-                "マイクへのアクセスが Windows のプライバシー設定で許可されていません。\n\
-                 自分の声を録音するには「デスクトップ アプリにマイクへのアクセスを許可する」をオンにしてください。\n\n\
-                 設定を開きますか？",
-            );
-            let title = wide(text::APP_NAME);
-            let r = MessageBoxW(
-                Some(hwnd),
-                PCWSTR(text.as_ptr()),
-                PCWSTR(title.as_ptr()),
-                MB_YESNO | MB_ICONINFORMATION | MB_SETFOREGROUND,
-            );
-            if r == IDYES {
-                ShellExecuteW(
-                    None,
-                    w!("open"),
-                    w!("ms-settings:privacy-microphone"),
-                    None,
-                    None,
-                    SW_SHOWNORMAL,
-                );
-            }
-            LRESULT(0)
-        }
-        WM_POWERBROADCAST => {
-            match wparam.0 as u32 {
-                PBT_APMSUSPEND => dispatch(UiEvent::WillSleep),
-                PBT_APMRESUMEAUTOMATIC => dispatch(UiEvent::DidWake),
-                _ => {}
-            }
-            LRESULT(1)
-        }
-        WM_QUERYENDSESSION => LRESULT(1),
-        WM_ENDSESSION => {
-            if wparam.0 != 0 {
-                // ログアウト・シャットダウン：戻る前に同期的に確定する。
-                dispatch(UiEvent::Shutdown);
-            }
-            LRESULT(0)
-        }
-        windows::Win32::UI::WindowsAndMessaging::WM_CLOSE => {
-            // taskkill（/F なし）やインストーラ等からの終了要求：録画を確定してから閉じる。
-            dispatch(UiEvent::Shutdown);
-            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
-            LRESULT(0)
-        }
-        WM_DESTROY => {
-            PostQuitMessage(0);
-            LRESULT(0)
-        }
-        _ => {
-            let created = TASKBAR_CREATED.with(|c| c.get());
-            if created != 0 && msg == created {
-                // エクスプローラーが再起動した：アイコンを登録し直す。
-                MAIN.with(|m| {
-                    if let Ok(mut g) = m.try_borrow_mut() {
-                        if let Some(main) = g.as_mut() {
-                            main.plat.tray.add();
+                    NIN_BALLOONUSERCLICK => {
+                        let path = MAIN.with(|m| {
+                            m.try_borrow()
+                                .ok()
+                                .and_then(|g| g.as_ref().and_then(|x| x.plat.last_open.clone()))
+                        });
+                        if let Some(path) = path {
+                            open_path(&path);
                         }
                     }
-                });
-                return LRESULT(0);
+                    _ => {}
+                }
+                LRESULT(0)
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            WM_PROMPT_ANSWER => {
+                let answer = match wparam.0 {
+                    1 => PromptAnswer::Record {
+                        always: lparam.0 != 0,
+                    },
+                    _ => PromptAnswer::Skip,
+                };
+                dispatch(UiEvent::Prompt(answer));
+                LRESULT(0)
+            }
+            WM_RECORDER => {
+                while let Some(event) = next_recorder_event() {
+                    dispatch(UiEvent::Recorder(event));
+                }
+                LRESULT(0)
+            }
+            WM_PERMISSIONS => {
+                let text = wide(
+                    "マイクへのアクセスが Windows のプライバシー設定で許可されていません。\n\
+                 自分の声を録音するには「デスクトップ アプリにマイクへのアクセスを許可する」をオンにしてください。\n\n\
+                 設定を開きますか？",
+                );
+                let title = wide(text::APP_NAME);
+                let r = MessageBoxW(
+                    Some(hwnd),
+                    PCWSTR(text.as_ptr()),
+                    PCWSTR(title.as_ptr()),
+                    MB_YESNO | MB_ICONINFORMATION | MB_SETFOREGROUND,
+                );
+                if r == IDYES {
+                    ShellExecuteW(
+                        None,
+                        w!("open"),
+                        w!("ms-settings:privacy-microphone"),
+                        None,
+                        None,
+                        SW_SHOWNORMAL,
+                    );
+                }
+                LRESULT(0)
+            }
+            WM_POWERBROADCAST => {
+                match wparam.0 as u32 {
+                    PBT_APMSUSPEND => dispatch(UiEvent::WillSleep),
+                    PBT_APMRESUMEAUTOMATIC => dispatch(UiEvent::DidWake),
+                    _ => {}
+                }
+                LRESULT(1)
+            }
+            WM_QUERYENDSESSION => LRESULT(1),
+            WM_ENDSESSION => {
+                if wparam.0 != 0 {
+                    // ログアウト・シャットダウン：戻る前に同期的に確定する。
+                    dispatch(UiEvent::Shutdown);
+                }
+                LRESULT(0)
+            }
+            WM_CLOSE => {
+                // taskkill（/F なし）やインストーラ等からの終了要求：録画を確定してから閉じる。
+                dispatch(UiEvent::Shutdown);
+                let _ = DestroyWindow(hwnd);
+                LRESULT(0)
+            }
+            WM_DESTROY => {
+                PostQuitMessage(0);
+                LRESULT(0)
+            }
+            _ => {
+                let created = TASKBAR_CREATED.with(|c| c.get());
+                if created != 0 && msg == created {
+                    // エクスプローラーが再起動した：アイコンを登録し直す。
+                    MAIN.with(|m| {
+                        if let Ok(mut g) = m.try_borrow_mut()
+                            && let Some(main) = g.as_mut()
+                        {
+                            main.plat.tray.add();
+                        }
+                    });
+                    return LRESULT(0);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
         }
     }
 }
@@ -309,10 +317,10 @@ pub fn run(app: Box<dyn App>) {
         }
         // どの経路でループを抜けても、録画中なら必ず確定してから終了する。
         MAIN.with(|m| {
-            if let Some(main) = m.borrow_mut().as_mut() {
-                if let Some(summary) = main.plat.stop_recording() {
-                    meetrec_core::info!("終了時に録画を確定しました: {summary:?}");
-                }
+            if let Some(main) = m.borrow_mut().as_mut()
+                && let Some(summary) = main.plat.stop_recording()
+            {
+                meetrec_core::info!("終了時に録画を確定しました: {summary:?}");
             }
         });
         // トレイアイコン等を片付けてから終了する。
@@ -448,7 +456,7 @@ impl Platform for WinPlatform {
             } else {
                 let e = RegDeleteValueW(key, RUN_VALUE);
                 // もともと無い場合は成功扱い。
-                if e.0 == 2 {
+                if e == ERROR_FILE_NOT_FOUND {
                     ERROR_SUCCESS
                 } else {
                     e

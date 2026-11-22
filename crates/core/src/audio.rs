@@ -6,17 +6,22 @@
 //!   追従し（クロックドリフト対策）、100ms を超えたら位置を合わせ直す（切替・欠落対策）。
 //! - バッファは固定長（ソースごと約 3 秒）。あふれた分は捨て、メモリは増えない。
 
+use crate::platform::NS_PER_SEC;
+
 pub const OUT_RATE: u32 = 48_000;
 pub const FRAME: usize = 1024;
 /// 1 フレームの interleaved ステレオ float の長さ。
 pub const FRAME_LEN: usize = FRAME * 2;
+/// AAC-LC 48kHz ステレオの AudioSpecificConfig。OS のエンコーダから取得できないときの既定値で、
+/// `OUT_RATE` とチャンネル数（2）に対応する。
+pub const DEFAULT_ASC: [u8; 2] = [0x11, 0x90];
 
 const CAP: usize = OUT_RATE as usize * 3;
 const HARD_RESYNC: f64 = OUT_RATE as f64 * 0.1;
 const MAX_ADJ: f64 = 0.005;
 
 fn pos_of(ns: u64) -> u64 {
-    (ns as u128 * OUT_RATE as u128 / 1_000_000_000) as u64
+    (ns as u128 * OUT_RATE as u128 / NS_PER_SEC as u128) as u64
 }
 
 struct Source {
@@ -88,12 +93,13 @@ impl Mixer {
     /// PCM を投入する。`pts_ns` は先頭サンプルの時刻（録画開始からの経過）、
     /// `data` は interleaved float。
     pub fn push(&mut self, source: usize, pts_ns: u64, rate: u32, channels: u16, data: &[f32]) {
-        if rate == 0 || channels == 0 || data.is_empty() {
+        let ch = channels as usize;
+        // 1 フレームに満たない入力（チャンネル数より短い）も捨てる。
+        if rate == 0 || ch == 0 || data.len() < ch {
             return;
         }
         let emitted = self.emitted;
         let s = &mut self.sources[source];
-        let ch = channels as usize;
         let n = data.len() / ch;
         let ts_pos = pos_of(pts_ns) as f64;
 
@@ -199,10 +205,6 @@ impl Mixer {
             done += 1;
             f(&mix, &per);
         }
-    }
-
-    pub fn emitted_samples(&self) -> u64 {
-        self.emitted
     }
 }
 
@@ -314,7 +316,7 @@ mod tests {
     fn gap_and_device_switch_resync() {
         let mut m = Mixer::new(1, 0);
         m.push(0, 0, 48_000, 2, &vec![0.5f32; 4800 * 2]); // 0〜100ms
-                                                          // デバイス切替：400ms 欠落し、レートも変わる。
+        // デバイス切替：400ms 欠落し、レートも変わる。
         m.push(0, 500 * MS, 44_100, 2, &vec![0.25f32; 4410 * 2]); // 500〜600ms
         assert_eq!(m.stats().resyncs, 1);
         let (mix, _) = collect(&mut m, 700 * MS, true);
@@ -372,5 +374,14 @@ mod tests {
         assert_eq!(n, 10);
         m.pull(1250 * MS, false, 1000, |_, _| n += 1);
         assert_eq!(n, 48_000 / FRAME);
+    }
+
+    #[test]
+    fn input_shorter_than_one_frame_is_ignored() {
+        let mut m = Mixer::new(1, 0);
+        // ステレオなのに 1 サンプルしかない（1 フレームに満たない）。
+        m.push(0, 0, 48_000, 2, &[0.5]);
+        m.push(0, 0, 48_000, 2, &[]);
+        assert_eq!(m.stats(), MixerStats::default());
     }
 }

@@ -5,7 +5,7 @@ use std::mem::{size_of, zeroed};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use meetrec_core::platform::{LocalTime, RawUsage};
+use meetrec_core::platform::{LocalTime, NS_PER_SEC, RawUsage};
 
 /// mach_absolute_time をナノ秒にしたもの。ScreenCaptureKit のサンプルの PTS
 /// （ホスト時計）と同じ時間軸。スリープ中は進まない。
@@ -14,7 +14,7 @@ pub fn now_ns() -> u64 {
     unsafe {
         let mut ts: libc::timespec = zeroed();
         libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut ts);
-        ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+        ts.tv_sec as u64 * NS_PER_SEC + ts.tv_nsec as u64
     }
 }
 
@@ -69,7 +69,7 @@ pub fn resource_usage() -> Option<RawUsage> {
         if libc::getrusage(libc::RUSAGE_SELF, &mut ru) != 0 {
             return None;
         }
-        let tv = |t: libc::timeval| t.tv_sec as u64 * 1_000_000_000 + t.tv_usec as u64 * 1000;
+        let tv = |t: libc::timeval| t.tv_sec as u64 * NS_PER_SEC + t.tv_usec as u64 * 1000;
         Some(RawUsage {
             // アクティビティモニタの「メモリ」と同じ phys_footprint。
             rss_bytes: info.ri_phys_footprint,

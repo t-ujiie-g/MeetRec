@@ -3,12 +3,12 @@ name = "meetrec-mac"
 description = "MeetRec の macOS 層（ScreenCaptureKit / VideoToolbox / CoreAudio / AppKit）"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
-[dependencies]
-meetrec-core.workspace = true
-
+# クレート全体が macOS 専用（`#![cfg(target_os = "macos")]`）なので、依存もすべて macOS のときだけ。
 [target.'cfg(target_os = "macos")'.dependencies]
+meetrec-core.workspace = true
 libc = "0.2"
 objc2 = "0.6"
 block2 = "0.6"

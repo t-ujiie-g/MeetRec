@@ -3,7 +3,7 @@
 新しいセッションはこのファイルと DECISIONS.md を読めば再開できる。
 
 ## 現在地
-- ブランチ：`claude/relaxed-allen-gw2kq3`
+- ブランチ：`main`（作業は `refactor/` などの作業ブランチで行い、PR で取り込む）
 - M0〜M7 のコードと文書は一通り実装済み。**macOS / Windows の実機では一度も動かしていない**
   （開発環境が Linux コンテナのため）。確認できているのは「Linux 上のユニットテスト」「両 OS 向けの型検査・clippy」
   「CI（実機ランナー）でのビルド・リンク・core テスト」まで。
@@ -32,7 +32,7 @@
 - コミット `f768eb8`（2026-11-20）で 3 ジョブ（core / macos-latest / windows-latest）とも緑。
   成果物 `MeetRec-macos`（.app の zip、圧縮後 約 0.75MB）と `MeetRec-windows`（MeetRec.exe、圧縮後 約 0.3MB）が
   ダウンロードできる。バイナリサイズは目標（20MB）を大きく下回る。
-- CI は Rust 1.97.0 に固定（`rust-toolchain.toml`）。新しい clippy の指摘で CI だけ赤になるのを防ぐため。
+- CI は Rust 1.100.0 に固定（`rust-toolchain.toml`）。新しい clippy の指摘で CI だけ赤になるのを防ぐため。
 - 緑が示すのは「ビルド・リンクできる」「core のテストが両 OS で通る」ことまで。起動・録画の動作は示さない。
 
 ## 次にやること
@@ -153,15 +153,12 @@
 - イベント処理中に WM_ENDSESSION が来た場合（Shutdown はキューに積まれ、メッセージループ終了時に確定する）。
 - メモリ計測は WorkingSetSize を使用（目標値との照合は未実施）。
 - Run キーによる自動起動、多重起動防止ミューテックス、SmartScreen 下での起動。
+- `/DEPENDENTLOADFLAG:0x800`（依存 DLL を System32 からだけ読む。D25）を付けた exe が起動するか。
+- 録画イベントの通知（キュー＋ WM_RECORDER の合図。D27）で、書き込み失敗・映像なしの通知が届くか。
 
 ## CI の確認方法
 - GitHub Actions の実行結果はこのセッションから確認できる（GitHub MCP の actions ツール）。
   新しいセッションでも、プッシュ後に毎回 3 ジョブ（core / macos / windows）の結果を確認し、赤なら直すこと。
 
 ## 開発コマンド
-```sh
-cargo test --workspace                                   # Linux で core のテスト
-cargo clippy --workspace --all-targets -- -D warnings
-cargo check -p meetrec --target aarch64-apple-darwin     # macOS 向け型検査（Linux 上で可）
-cargo check -p meetrec --target x86_64-pc-windows-msvc   # Windows 向け型検査（Linux 上で可）
-```
+[AGENTS.md](AGENTS.md) の「コマンド」を参照。

@@ -5,7 +5,6 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 
 use meetrec_core::session::FrameGate;
-use windows::core::{factory, Interface, Result as WinResult};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
     Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureAccess,
@@ -18,6 +17,7 @@ use windows::Win32::Foundation::{E_FAIL, HWND};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess;
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+use windows::core::{Interface, Result as WinResult, factory};
 
 /// キューに溜めるフレーム数の上限（あふれたら古い方を捨てる）。
 const QUEUE_LIMIT: usize = 2;

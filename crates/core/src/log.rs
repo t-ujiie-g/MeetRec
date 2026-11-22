@@ -74,24 +74,24 @@ pub fn write(level: &str, msg: std::fmt::Arguments) {
         l.recent.pop_front();
     }
     l.recent.push_back(line.clone());
-    if l.size > MAX_BYTES {
-        if let Some(path) = l.path.clone() {
-            l.file = None;
-            let mut old = path.clone().into_os_string();
-            old.push(".1");
-            let _ = fs::rename(&path, PathBuf::from(old));
-            l.file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .ok();
-            l.size = 0;
-        }
+    if l.size > MAX_BYTES
+        && let Some(path) = l.path.clone()
+    {
+        l.file = None;
+        let mut old = path.clone().into_os_string();
+        old.push(".1");
+        let _ = fs::rename(&path, PathBuf::from(old));
+        l.file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok();
+        l.size = 0;
     }
-    if let Some(f) = l.file.as_mut() {
-        if writeln!(f, "{line}").is_ok() {
-            l.size += line.len() as u64 + 1;
-        }
+    if let Some(f) = l.file.as_mut()
+        && writeln!(f, "{line}").is_ok()
+    {
+        l.size += line.len() as u64 + 1;
     }
 }
 

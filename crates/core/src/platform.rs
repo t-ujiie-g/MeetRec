@@ -10,9 +10,8 @@ use crate::config::Mode;
 
 pub type Pid = u32;
 
-/// OS のウィンドウ識別子（macOS: CGWindowID、Windows: HWND）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct WindowId(pub u64);
+/// 1 秒のナノ秒数。`Platform::now_ns` と録画セッションの時計はナノ秒単位。
+pub const NS_PER_SEC: u64 = 1_000_000_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProcInfo {
@@ -32,6 +31,7 @@ pub struct MicUser {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WindowInfo {
+    /// OS のウィンドウ識別子（macOS: CGWindowID、Windows: HWND）。
     pub id: u64,
     pub owner: ProcInfo,
     pub title: String,
@@ -40,12 +40,6 @@ pub struct WindowInfo {
     pub width: u32,
     pub height: u32,
     pub minimized: bool,
-}
-
-impl WindowInfo {
-    pub fn window_id(&self) -> WindowId {
-        WindowId(self.id)
-    }
 }
 
 /// ローカル時刻（ファイル名用）。OS 層が提供する。

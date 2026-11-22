@@ -3,34 +3,55 @@
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-use meetrec_core::platform::RecordSettings;
+use meetrec_core::platform::{NS_PER_SEC, RecordSettings};
 use meetrec_core::session::Session;
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_media::{
-    kCMSampleAttachmentKey_NotSync, kCMVideoCodecType_H264, CMSampleBuffer, CMTime,
-    CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
+    CMSampleBuffer, CMTime, CMTimeFlags, CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
+    kCMSampleAttachmentKey_NotSync, kCMVideoCodecType_H264,
 };
 use objc2_core_video::CVImageBuffer;
 use objc2_video_toolbox::{
+    VTCompressionSession, VTEncodeInfoFlags, VTSessionSetProperty,
     kVTCompressionPropertyKey_AllowFrameReordering, kVTCompressionPropertyKey_AverageBitRate,
     kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_MaxKeyFrameInterval,
     kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, kVTCompressionPropertyKey_ProfileLevel,
     kVTCompressionPropertyKey_RealTime, kVTProfileLevel_H264_High_AutoLevel,
     kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder,
-    kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder, VTCompressionSession,
-    VTEncodeInfoFlags, VTSessionSetProperty,
+    kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
 };
+
+/// キャプチャの PTS とホスト時計の差がこれ以上なら、別の時計とみなして補正する。
+const CLOCK_MISMATCH_NS: i64 = 2 * NS_PER_SEC as i64;
 
 /// CMTime をナノ秒にする（無効な時刻は None）。
 pub fn cmtime_ns(t: CMTime) -> Option<u64> {
-    if t.timescale <= 0 || t.value < 0 || t.flags.0 & 1 == 0 {
+    if t.timescale <= 0 || t.value < 0 || !t.flags.contains(CMTimeFlags::Valid) {
         return None;
     }
-    Some((t.value as i128 * 1_000_000_000 / t.timescale as i128) as u64)
+    Some((t.value as i128 * NS_PER_SEC as i128 / t.timescale as i128) as u64)
 }
+
+/// `value / timescale` 秒を表す有効な CMTime。
+pub fn cmtime(value: i64, timescale: i32) -> CMTime {
+    CMTime {
+        value,
+        timescale,
+        flags: CMTimeFlags::Valid,
+        epoch: 0,
+    }
+}
+
+/// kCMTimeInvalid（長さ・期限を指定しないことを表す）。
+const CMTIME_INVALID: CMTime = CMTime {
+    value: 0,
+    timescale: 0,
+    flags: CMTimeFlags(0),
+    epoch: 0,
+};
 
 /// 出力コールバックに渡すコンテキスト。エンコーダが生きている間だけ有効。
 struct Ctx {
@@ -43,7 +64,7 @@ struct Ctx {
 
 /// キャプチャの PTS とセッション時計（`sys::now_ns`）の差の補正。
 /// 未検証: ScreenCaptureKit の PTS は mach_absolute_time と同じホスト時計の想定。
-/// 最初のサンプルで 2 秒以上ずれていたら別の時計とみなし、以後その差を足して使う。
+/// 最初のサンプルで `CLOCK_MISMATCH_NS` 以上ずれていたら別の時計とみなし、以後その差を足して使う。
 pub struct ClockOffset(AtomicI64);
 
 impl ClockOffset {
@@ -59,7 +80,11 @@ impl ClockOffset {
             return;
         }
         let diff = now_ns as i64 - pts_ns as i64;
-        let offset = if diff.abs() < 2_000_000_000 { 0 } else { diff };
+        let offset = if diff.abs() < CLOCK_MISMATCH_NS {
+            0
+        } else {
+            diff
+        };
         if offset != 0 {
             meetrec_core::warn!("キャプチャの時計がホスト時計と {diff}ns ずれています。補正します");
         }
@@ -121,45 +146,43 @@ unsafe extern "C-unwind" fn output_callback(
         }
         // NotSync が無い（または false）ならキーフレーム。
         let mut key = true;
-        if let Some(att) = sbuf.sample_attachments_array(false) {
-            if att.count() > 0 {
-                let dict = att.value_at_index(0) as *const CFDictionary;
-                if let Some(dict) = dict.as_ref() {
-                    let k = kCMSampleAttachmentKey_NotSync as *const CFString as *const c_void;
-                    let v = dict.value(k) as *const CFBoolean;
-                    if let Some(v) = v.as_ref() {
-                        key = !v.value();
-                    }
+        if let Some(att) = sbuf.sample_attachments_array(false)
+            && att.count() > 0
+        {
+            let dict = att.value_at_index(0) as *const CFDictionary;
+            if let Some(dict) = dict.as_ref() {
+                let k = kCMSampleAttachmentKey_NotSync as *const CFString as *const c_void;
+                let v = dict.value(k) as *const CFBoolean;
+                if let Some(v) = v.as_ref() {
+                    key = !v.value();
                 }
             }
         }
         let mut sps: Option<Vec<u8>> = None;
         let mut pps: Option<Vec<u8>> = None;
-        if key {
-            if let Some(fmt) = sbuf.format_description() {
-                let get = |index: usize| -> Option<Vec<u8>> {
-                    let mut ptr: *const u8 = std::ptr::null();
-                    let mut size = 0usize;
-                    let mut nal_len = 0i32;
-                    let st = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                        &fmt,
-                        index,
-                        &mut ptr,
-                        &mut size,
-                        std::ptr::null_mut(),
-                        &mut nal_len,
-                    );
-                    if st != 0 || ptr.is_null() || size == 0 {
-                        return None;
-                    }
-                    if nal_len != 4 && ctx.errors.fetch_add(1, Ordering::Relaxed) == 0 {
-                        meetrec_core::warn!("想定外の NAL 長プレフィックス: {nal_len}");
-                    }
-                    Some(std::slice::from_raw_parts(ptr, size).to_vec())
-                };
-                sps = get(0);
-                pps = get(1);
-            }
+        if key && let Some(fmt) = sbuf.format_description() {
+            let get = |index: usize| -> Option<Vec<u8>> {
+                let mut ptr: *const u8 = std::ptr::null();
+                let mut size = 0usize;
+                let mut nal_len = 0i32;
+                let st = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                    &fmt,
+                    index,
+                    &mut ptr,
+                    &mut size,
+                    std::ptr::null_mut(),
+                    &mut nal_len,
+                );
+                if st != 0 || ptr.is_null() || size == 0 {
+                    return None;
+                }
+                if nal_len != 4 && ctx.errors.fetch_add(1, Ordering::Relaxed) == 0 {
+                    meetrec_core::warn!("想定外の NAL 長プレフィックス: {nal_len}");
+                }
+                Some(std::slice::from_raw_parts(ptr, size).to_vec())
+            };
+            sps = get(0);
+            pps = get(1);
         }
         ctx.session.push_video_avcc(
             ctx.clock.apply(pts),
@@ -280,18 +303,12 @@ impl VideoEncoder {
 
     /// 1 フレームをエンコードに投入する（非同期。結果は出力コールバックへ）。
     pub fn encode(&self, image: &CVImageBuffer, pts: CMTime) {
-        let invalid = CMTime {
-            value: 0,
-            timescale: 0,
-            flags: objc2_core_media::CMTimeFlags(0),
-            epoch: 0,
-        };
         // SAFETY: image は呼び出し中有効で、VT が必要なら自分で retain する。
         let st = unsafe {
             self.vt.encode_frame(
                 image,
                 pts,
-                invalid,
+                CMTIME_INVALID,
                 None,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -309,16 +326,10 @@ impl VideoEncoder {
 
 impl Drop for VideoEncoder {
     fn drop(&mut self) {
-        let invalid = CMTime {
-            value: 0,
-            timescale: 0,
-            flags: objc2_core_media::CMTimeFlags(0),
-            epoch: 0,
-        };
         // SAFETY: 残りのフレームを出し切ってから無効化する。invalidate 後は
         // コールバックが呼ばれないので ctx を解放できる。
         unsafe {
-            self.vt.complete_frames(invalid);
+            self.vt.complete_frames(CMTIME_INVALID);
             self.vt.invalidate();
             drop(Box::from_raw(self.ctx));
         }

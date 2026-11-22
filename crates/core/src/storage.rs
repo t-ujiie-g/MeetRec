@@ -147,6 +147,8 @@ pub enum RecoveryOutcome {
     Failed { path: PathBuf, error: String },
     /// ファイルが見つからない。
     Missing { path: PathBuf },
+    /// マーカーが MeetRec の録画ファイル以外を指していた（ファイルには触れない）。
+    NotRecording { path: PathBuf },
 }
 
 /// 起動時：残っているマーカーを調べ、未確定ファイルを修復する。
@@ -165,7 +167,13 @@ pub fn recover(marker_dir: &Path) -> Vec<RecoveryOutcome> {
             continue;
         };
         let path = PathBuf::from(target.trim());
-        let outcome = if !path.is_file() {
+        // 修復は切り詰め・削除を伴う。マーカーの中身を書き換えられても、録画以外のファイルを壊さない。
+        let is_recording = path
+            .file_name()
+            .is_some_and(|n| is_recording_name(&n.to_string_lossy()));
+        let outcome = if !is_recording {
+            RecoveryOutcome::NotRecording { path }
+        } else if !path.is_file() {
             RecoveryOutcome::Missing { path }
         } else {
             match mp4::repair_file(&path) {
@@ -339,5 +347,25 @@ mod tests {
             vec![RecoveryOutcome::RemovedEmpty { path: rec.clone() }]
         );
         assert!(!rec.exists());
+    }
+
+    #[test]
+    fn recover_does_not_touch_files_that_are_not_recordings() {
+        let d = temp_dir("marker-foreign");
+        let md = d.join("inprogress");
+        let other = d.join("notes.mp4");
+        fs::write(&other, b"junk").unwrap();
+        // マーカーの中身だけを、録画ではないファイルに書き換えられた場合。
+        fs::create_dir_all(&md).unwrap();
+        let marker = md.join("2026-11-20_1430_Zoom.mp4.inprogress");
+        fs::write(&marker, other.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(
+            recover(&md),
+            vec![RecoveryOutcome::NotRecording {
+                path: other.clone()
+            }]
+        );
+        assert_eq!(fs::read(&other).unwrap(), b"junk");
+        assert!(!marker.exists());
     }
 }

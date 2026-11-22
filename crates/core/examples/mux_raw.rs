@@ -60,7 +60,7 @@ fn main() {
             kind: TrackKind::Audio {
                 sample_rate: 48_000,
                 channels: 2,
-                asc: vec![0x11, 0x90],
+                asc: meetrec_core::audio::DEFAULT_ASC.to_vec(),
                 bitrate: 96_000,
             },
             timescale: 48_000,

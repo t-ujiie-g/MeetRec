@@ -2,22 +2,22 @@
 //! 回答はメインウィンドウへ `answer_msg`（wParam: 1=録画する, 2=今回はしない / lParam: チェック）で送る。
 
 use meetrec_core::platform::PromptModel;
-use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontIndirectW, DeleteObject, COLOR_BTNFACE, HBRUSH, HFONT,
+    COLOR_BTNFACE, CreateFontIndirectW, DeleteObject, HBRUSH, HFONT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, LoadCursorW, PostMessageW,
-    RegisterClassExW, SendMessageW, SetWindowLongPtrW, ShowWindow, SystemParametersInfoW,
-    BM_GETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, GWLP_USERDATA, HMENU, IDC_ARROW,
-    NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SPI_GETWORKAREA, SW_SHOWNOACTIVATE,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
+    BM_GETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CreateWindowExW, DefWindowProcW,
+    DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW,
+    NONCLIENTMETRICSW, PostMessageW, RegisterClassExW, SPI_GETNONCLIENTMETRICS, SPI_GETWORKAREA,
+    SW_SHOWNOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetWindowLongPtrW,
+    ShowWindow, SystemParametersInfoW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
     WM_SETFONT, WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
+use windows::core::{PCWSTR, w};
 
 use crate::sys::wide;
 
@@ -42,25 +42,27 @@ struct Ctx {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    match msg {
-        WM_COMMAND => {
-            let id = (wparam.0 & 0xffff) as isize;
-            let ctx = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Ctx;
-            if !ctx.is_null() && (id == ID_RECORD || id == ID_SKIP) {
-                let ctx = &*ctx;
-                let checked = SendMessageW(ctx.checkbox, BM_GETCHECK, None, None).0 == 1;
-                let _ = PostMessageW(
-                    Some(ctx.main),
-                    ctx.answer_msg,
-                    WPARAM(id as usize),
-                    LPARAM(checked as isize),
-                );
+    unsafe {
+        match msg {
+            WM_COMMAND => {
+                let id = (wparam.0 & 0xffff) as isize;
+                let ctx = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Ctx;
+                if !ctx.is_null() && (id == ID_RECORD || id == ID_SKIP) {
+                    let ctx = &*ctx;
+                    let checked = SendMessageW(ctx.checkbox, BM_GETCHECK, None, None).0 == 1;
+                    let _ = PostMessageW(
+                        Some(ctx.main),
+                        ctx.answer_msg,
+                        WPARAM(id as usize),
+                        LPARAM(checked as isize),
+                    );
+                }
+                LRESULT(0)
             }
-            LRESULT(0)
+            // Alt+F4 等では閉じない（答えるまで消さない）。
+            WM_CLOSE => LRESULT(0),
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
-        // Alt+F4 等では閉じない（答えるまで消さない）。
-        WM_CLOSE => LRESULT(0),
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
 

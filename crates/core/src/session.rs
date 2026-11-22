@@ -11,10 +11,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::audio::{Mixer, MixerStats, FRAME, OUT_RATE};
+use crate::audio::{FRAME, FRAME_LEN, Mixer, MixerStats, OUT_RATE};
 use crate::h264;
 use crate::mp4::{self, FragWriter, TrackKind, TrackSpec, VIDEO_TIMESCALE};
-use crate::platform::RecordingSummary;
+use crate::platform::{NS_PER_SEC, RecordingSummary};
 use crate::storage;
 
 pub const SRC_APP: usize = 0;
@@ -242,7 +242,7 @@ impl Shared {
         avcc: &[u8],
     ) {
         let rel = pts_ns.saturating_sub(self.t0);
-        let pts = (rel as u128 * VIDEO_TIMESCALE as u128 / 1_000_000_000) as u64;
+        let pts = (rel as u128 * VIDEO_TIMESCALE as u128 / NS_PER_SEC as u128) as u64;
         let mut mux = self.mux.lock().unwrap();
         if mux.video_off || mux.failed {
             return;
@@ -393,13 +393,13 @@ impl Ticker {
                     frames.extend_from_slice(&per[SRC_MIC]);
                 }
             });
-        let per_frame = FRAME * 2 * if n_enc >= 3 { 3 } else { 1 };
+        let per_frame = FRAME_LEN * if n_enc >= 3 { 3 } else { 1 };
         let count = self.frames.len() / per_frame;
         for i in 0..count {
             let base = i * per_frame;
             for track in 0..n_enc.min(3) {
-                let at = base + track * FRAME * 2;
-                self.encode(track, at..at + FRAME * 2);
+                let at = base + track * FRAME_LEN;
+                self.encode(track, at..at + FRAME_LEN);
             }
         }
         if stopping {
@@ -422,14 +422,15 @@ impl Ticker {
             return;
         }
         let due = now_ms.saturating_sub(mux.last_flush_ms) >= shared.cfg.fragment_ms as u64;
-        if due && !stopping {
-            if let Some(w) = mux.writer.as_mut() {
-                // sync_data まで行い、電源断でも直前のフラグメントまで残す。
-                let res = w.flush(now_ms).and_then(|_| w.get_mut().sync_data());
-                mux.last_flush_ms = now_ms;
-                if let Err(e) = res {
-                    shared.fail(&mut mux, e);
-                }
+        if due
+            && !stopping
+            && let Some(w) = mux.writer.as_mut()
+        {
+            // sync_data まで行い、電源断でも直前のフラグメントまで残す。
+            let res = w.flush(now_ms).and_then(|_| w.get_mut().sync_data());
+            mux.last_flush_ms = now_ms;
+            if let Err(e) = res {
+                shared.fail(&mut mux, e);
             }
         }
     }
@@ -621,7 +622,7 @@ impl FrameGate {
     pub fn new(fps: u32) -> FrameGate {
         // 配信タイミングの揺れで本来のフレームを落とさないよう 10% の余裕を持たせる。
         FrameGate {
-            min_interval_ns: 900_000_000 / fps.max(1) as u64,
+            min_interval_ns: NS_PER_SEC * 9 / 10 / fps.max(1) as u64,
             last: None,
         }
     }
@@ -636,6 +637,9 @@ impl FrameGate {
         }
     }
 }
+
+/// ソフトウェアエンコードにフォールバックしたときの解像度上限（長辺）。両 OS で揃える（DECISIONS D23）。
+pub const SOFTWARE_MAX_LONG_SIDE: u32 = 1280;
 
 /// 出力キャンバス（エンコード解像度）を決める。長辺を `max_long` 以下に縮小し、偶数に丸める。
 /// 小さいウィンドウ（ミニウィンドウ等）から始まった場合は、後で大きなウィンドウに
@@ -693,10 +697,10 @@ mod tests {
     struct FakeAac;
     impl AacEncoder for FakeAac {
         fn asc(&self) -> Vec<u8> {
-            vec![0x11, 0x90]
+            crate::audio::DEFAULT_ASC.to_vec()
         }
         fn encode(&mut self, pcm: &[f32]) -> Result<Vec<Vec<u8>>, String> {
-            assert_eq!(pcm.len(), FRAME * 2);
+            assert_eq!(pcm.len(), FRAME_LEN);
             Ok(vec![vec![0x21; 64]])
         }
         fn finish(&mut self) -> Vec<Vec<u8>> {
@@ -719,7 +723,7 @@ mod tests {
 
     fn rig(name: &str, tweak: impl FnOnce(&mut SessionConfig)) -> Rig {
         let dir = temp_dir(name);
-        let path = dir.join("rec.mp4");
+        let path = dir.join("2026-11-20_1430_Zoom.mp4");
         let mut cfg = SessionConfig::new(path.clone(), dir.join("inprogress"));
         cfg.mixer_latency_ms = 0;
         tweak(&mut cfg);
@@ -825,10 +829,12 @@ mod tests {
         assert!(marker.exists());
         let out = storage::recover(marker.parent().unwrap());
         match &out[..] {
-            [storage::RecoveryOutcome::Repaired {
-                path: p,
-                duration_ms,
-            }] => {
+            [
+                storage::RecoveryOutcome::Repaired {
+                    path: p,
+                    duration_ms,
+                },
+            ] => {
                 assert_eq!(p, &path);
                 assert!((3_900..=4_300).contains(duration_ms), "{duration_ms}");
             }

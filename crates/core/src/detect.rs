@@ -7,10 +7,8 @@
 //!       一時的な切断・再接続では (a)(b) のタイマーがリセットされるので分断しない。
 
 use crate::config::DetectConfig;
-use crate::platform::Pid;
+use crate::platform::{NS_PER_SEC as NS, Pid};
 use crate::rules::{Observation, Rules};
-
-const NS: u64 = 1_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectEvent {
@@ -59,13 +57,6 @@ impl Detector {
         }
     }
 
-    pub fn active_root(&self) -> Option<Pid> {
-        match self.phase {
-            Phase::Active { root_pid, .. } => Some(root_pid),
-            _ => None,
-        }
-    }
-
     /// ウィンドウ一覧の取得が必要か（アイドルでマイク使用もなければ不要）。
     pub fn wants_windows(&self) -> bool {
         !matches!(self.phase, Phase::Idle)
@@ -77,16 +68,16 @@ impl Detector {
 
     fn start_condition(rules: &Rules, obs: &Observation, app: usize) -> Option<Pid> {
         let rule = &rules.apps[app];
-        if let Some(root) = obs.mic_root(app) {
-            if obs.best_window(app, rule.start_score).is_some() {
-                return Some(root);
-            }
+        if let Some(root) = obs.mic_root(app)
+            && obs.best_window(app, rule.start_score).is_some()
+        {
+            return Some(root);
         }
         // マイク未使用でも、会議中にしか現れないウィンドウがあれば開始とみなす。
-        if rule.micless_start_score > 0 {
-            if let Some(w) = obs.best_window(app, rule.micless_start_score) {
-                return Some(obs.mic_root(app).unwrap_or(w.info.owner.pid));
-            }
+        if rule.micless_start_score > 0
+            && let Some(w) = obs.best_window(app, rule.micless_start_score)
+        {
+            return Some(obs.mic_root(app).unwrap_or(w.info.owner.pid));
         }
         None
     }

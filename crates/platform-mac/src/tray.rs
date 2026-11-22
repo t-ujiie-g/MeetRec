@@ -6,7 +6,7 @@ use meetrec_core::platform::{MenuAction, TrayModel};
 use meetrec_core::text;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, Sel};
-use objc2::{sel, MainThreadMarker, MainThreadOnly};
+use objc2::{MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
     NSBezierPath, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSImage, NSMenu,
     NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,

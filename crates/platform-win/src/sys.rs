@@ -2,17 +2,18 @@
 
 use std::sync::OnceLock;
 
+use meetrec_core::platform::NS_PER_SEC;
 use meetrec_core::session::Clock;
-use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
-use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
+use windows::core::PWSTR;
 
 /// NUL 終端の UTF-16 文字列。
 pub fn wide(s: &str) -> Vec<u16> {
@@ -59,7 +60,7 @@ pub fn qpc_ns() -> u64 {
     unsafe {
         let _ = QueryPerformanceCounter(&mut c);
     }
-    (c as u128 * 1_000_000_000u128 / qpc_freq() as u128) as u64
+    (c as u128 * NS_PER_SEC as u128 / qpc_freq() as u128) as u64
 }
 
 pub struct QpcClock;

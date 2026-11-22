@@ -229,15 +229,17 @@ impl Observation {
             .map(|(_, p)| *p)
     }
 
-    /// 録画対象として最良のウィンドウ（点数 → 非最小化 → 面積の順）。
+    /// 録画対象として最良のウィンドウ（非最小化 → 点数 → 面積の順）。
+    /// 最小化中のウィンドウは映像が止まるので、映っているウィンドウ（Zoom のミニウィンドウ等）
+    /// があればそちらを優先する。
     pub fn best_window(&self, app: usize, min_score: i32) -> Option<&ScoredWindow> {
         self.windows
             .iter()
             .filter(|w| w.app == app && w.capture && w.score >= min_score)
             .max_by_key(|w| {
                 (
-                    w.score,
                     !w.info.minimized,
+                    w.score,
                     w.info.width as u64 * w.info.height as u64,
                 )
             })
@@ -342,25 +344,25 @@ impl Rules {
     pub fn observe(&self, mic_users: &[MicUser], windows: &[WindowInfo]) -> Observation {
         let mut obs = Observation::default();
         for m in mic_users {
-            if let Some((app, root)) = self.app_for_chain(&m.chain) {
-                if obs.mic_root(app).is_none() {
-                    obs.mic_apps.push((app, root));
-                }
+            if let Some((app, root)) = self.app_for_chain(&m.chain)
+                && obs.mic_root(app).is_none()
+            {
+                obs.mic_apps.push((app, root));
             }
         }
         for w in windows {
             if w.width == 0 || w.height == 0 {
                 continue;
             }
-            if let Some(app) = self.app_for_proc(&w.owner) {
-                if let Some((score, capture)) = self.score_window(app, w) {
-                    obs.windows.push(ScoredWindow {
-                        app,
-                        score,
-                        capture,
-                        info: w.clone(),
-                    });
-                }
+            if let Some(app) = self.app_for_proc(&w.owner)
+                && let Some((score, capture)) = self.score_window(app, w)
+            {
+                obs.windows.push(ScoredWindow {
+                    app,
+                    score,
+                    capture,
+                    info: w.clone(),
+                });
             }
         }
         obs
@@ -376,10 +378,11 @@ impl Rules {
             }
             // 大文字小文字を無視して取り除く。
             let lower = t.to_lowercase();
-            if let Some(pos) = lower.find(&strip.to_lowercase()) {
-                if t.is_char_boundary(pos) && t.is_char_boundary(pos + strip.len()) {
-                    t.replace_range(pos..pos + strip.len(), "");
-                }
+            if let Some(pos) = lower.find(&strip.to_lowercase())
+                && t.is_char_boundary(pos)
+                && t.is_char_boundary(pos + strip.len())
+            {
+                t.replace_range(pos..pos + strip.len(), "");
             }
         }
         let t = t

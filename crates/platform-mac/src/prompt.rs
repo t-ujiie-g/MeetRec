@@ -5,7 +5,7 @@ use meetrec_core::platform::PromptModel;
 use meetrec_core::text;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{sel, MainThreadMarker, MainThreadOnly};
+use objc2::{MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
     NSBackingStoreType, NSButton, NSControlStateValueOn, NSPanel, NSScreen, NSStatusWindowLevel,
     NSTextField, NSWindowCollectionBehavior, NSWindowStyleMask,

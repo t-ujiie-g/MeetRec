@@ -17,23 +17,21 @@ use std::time::Duration;
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchRetained};
 use meetrec_core::platform::{
-    RecordRequest, RecordSettings, RecorderEvent, RecordingSummary, WindowInfo,
+    NS_PER_SEC, RecordRequest, RecordSettings, RecorderEvent, RecordingSummary, WindowInfo,
 };
 use meetrec_core::session::{
-    canvas_size, AacEncoder, Clock, FrameGate, Session, SessionConfig, SessionEvent, SRC_APP,
-    SRC_MIC,
+    AacEncoder, Clock, FrameGate, SOFTWARE_MAX_LONG_SIDE, SRC_APP, SRC_MIC, Session, SessionConfig,
+    SessionEvent, canvas_size,
 };
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
+use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
 use objc2_core_audio_types::{
-    kAudioFormatFlagIsBigEndian, kAudioFormatFlagIsFloat, kAudioFormatFlagIsNonInterleaved,
-    kAudioFormatLinearPCM, AudioBuffer, AudioBufferList,
+    AudioBuffer, AudioBufferList, kAudioFormatFlagIsBigEndian, kAudioFormatFlagIsFloat,
+    kAudioFormatFlagIsNonInterleaved, kAudioFormatLinearPCM,
 };
 use objc2_core_foundation::{CFDictionary, CFNumber};
-use objc2_core_media::{
-    CMAudioFormatDescriptionGetStreamBasicDescription, CMSampleBuffer, CMTime, CMTimeFlags,
-};
+use objc2_core_media::{CMAudioFormatDescriptionGetStreamBasicDescription, CMSampleBuffer};
 use objc2_core_video::kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
 use objc2_foundation::{NSArray, NSError};
 use objc2_screen_capture_kit::{
@@ -43,13 +41,13 @@ use objc2_screen_capture_kit::{
 
 use crate::aac::MacAac;
 use crate::app::{self, Item};
-use crate::encoder::{cmtime_ns, ClockOffset, VideoEncoder};
+use crate::encoder::{ClockOffset, VideoEncoder, cmtime, cmtime_ns};
 use crate::sys;
 
 /// 非同期 API の完了を待つ上限。
 const WAIT: Duration = Duration::from_secs(3);
-/// ソフトウェアエンコード時の解像度上限（長辺）。
-const SOFTWARE_MAX_LONG: u32 = 1280;
+/// 対象が残っているのにストリームが止まったとき、作り直しを試みる最短間隔。
+const RESTART_MIN_INTERVAL_NS: u64 = 30 * NS_PER_SEC;
 
 struct MacClock;
 impl Clock for MacClock {
@@ -100,6 +98,12 @@ fn shareable_content() -> Result<Retained<SCShareableContent>, String> {
 fn find_window(content: &SCShareableContent, id: u64) -> Option<Retained<SCWindow>> {
     // SAFETY: 取得済みの不変オブジェクトを読むだけ。
     unsafe { content.windows().iter().find(|w| w.windowID() as u64 == id) }
+}
+
+/// 1 つのウィンドウだけを（他のウィンドウに隠れていても）録るフィルタ。
+fn window_filter(window: &SCWindow) -> Retained<SCContentFilter> {
+    // SAFETY: 取得済みの SCWindow からフィルタを作る。
+    unsafe { SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), window) }
 }
 
 /// 完了ハンドラ（エラーのみ）を待つ。
@@ -405,11 +409,9 @@ impl Recorder {
         let mut encoder = None;
         let filter = match &window {
             Some(w) => {
-                // SAFETY: 取得済みの SCWindow からフィルタを作る。
-                let filter = unsafe {
-                    SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), w)
-                };
+                let filter = window_filter(w);
                 // ウィンドウの実ピクセル数（Retina では point の 2 倍）からキャンバスを決める。
+                // SAFETY: 作成済みのフィルタのプロパティを読むだけ。
                 let (pw, ph) = unsafe {
                     let rect = filter.contentRect();
                     let scale = filter.pointPixelScale().max(1.0) as f64;
@@ -439,7 +441,7 @@ impl Recorder {
                         let canvas = canvas_size(
                             pw.max(2),
                             ph.max(2),
-                            s.max_long_side.min(SOFTWARE_MAX_LONG),
+                            s.max_long_side.min(SOFTWARE_MAX_LONG_SIDE),
                         );
                         let fps = (s.fps / 2).max(5).min(s.fps);
                         match VideoEncoder::create(
@@ -522,21 +524,11 @@ impl Recorder {
                 // 映像は使わない。最小サイズ・最低頻度にして負荷を抑える。
                 c.setWidth(2);
                 c.setHeight(2);
-                c.setMinimumFrameInterval(CMTime {
-                    value: 1,
-                    timescale: 1,
-                    flags: CMTimeFlags(1),
-                    epoch: 0,
-                });
+                c.setMinimumFrameInterval(cmtime(1, 1));
             } else {
                 c.setWidth(self.canvas.0 as usize);
                 c.setHeight(self.canvas.1 as usize);
-                c.setMinimumFrameInterval(CMTime {
-                    value: 1,
-                    timescale: self.fps.max(1) as i32,
-                    flags: CMTimeFlags(1),
-                    epoch: 0,
-                });
+                c.setMinimumFrameInterval(cmtime(1, self.fps.max(1) as i32));
                 c.setPixelFormat(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
                 c.setScalesToFit(true);
                 c.setShowsCursor(self.settings.show_cursor);
@@ -622,10 +614,7 @@ impl Recorder {
         let result = shareable_content().and_then(|content| {
             let w =
                 find_window(&content, window.id).ok_or("ウィンドウが共有可能一覧にありません")?;
-            // SAFETY: 取得済みの SCWindow からフィルタを作る。
-            let filter = unsafe {
-                SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), &w)
-            };
+            let filter = window_filter(&w);
             let running = self.stream.is_some() && !self.stopped.load(Ordering::SeqCst);
             match &self.stream {
                 Some(stream) if running && self.stream_video => {
@@ -636,13 +625,13 @@ impl Recorder {
                 }
                 _ => {
                     // 止まっている、または音声だけの代替ストリーム：映像付きで作り直す。
-                    if let Some(old) = self.stream.take() {
-                        if running {
-                            // SAFETY: 完了ハンドラは任意のキューで呼ばれる。
-                            let _ = wait_completion(|h| unsafe {
-                                old.stopCaptureWithCompletionHandler(Some(h))
-                            });
-                        }
+                    if let Some(old) = self.stream.take()
+                        && running
+                    {
+                        // SAFETY: 完了ハンドラは任意のキューで呼ばれる。
+                        let _ = wait_completion(|h| unsafe {
+                            old.stopCaptureWithCompletionHandler(Some(h))
+                        });
                     }
                     self.stopped.store(true, Ordering::SeqCst);
                     self.start_stream(&filter, true)
@@ -669,20 +658,22 @@ impl Recorder {
             return None; // 既に作り直した後に届いた古い通知
         }
         self.stream = None;
-        if let Some(id) = self.target {
-            if !target_exists(id) {
-                // 未検証: 対象ウィンドウが閉じられるとストリームがエラー停止する想定。
-                // controller が次のティックで別のウィンドウへ張り替える。代わりのウィンドウが
-                // 現れるまでの間も、音声だけは録り続ける。
-                if !self.fallback_audio() {
-                    return Some(false);
-                }
-                return Some(true);
+        if let Some(id) = self.target
+            && !target_exists(id)
+        {
+            // 未検証: 対象ウィンドウが閉じられるとストリームがエラー停止する想定。
+            // controller が次のティックで別のウィンドウへ張り替える。代わりのウィンドウが
+            // 現れるまでの間も、音声だけは録り続ける。
+            if !self.fallback_audio() {
+                return Some(false);
             }
+            return Some(true);
         }
-        // 対象が残っているのに止まった：30 秒に 1 回までは作り直しを試みる。
+        // 対象が残っているのに止まった：作り直しを試みる（頻度は制限する）。
         let now = sys::now_ns();
-        if self.last_restart_ns != 0 && now.saturating_sub(self.last_restart_ns) < 30_000_000_000 {
+        if self.last_restart_ns != 0
+            && now.saturating_sub(self.last_restart_ns) < RESTART_MIN_INTERVAL_NS
+        {
             return Some(false);
         }
         self.last_restart_ns = now.max(1);
@@ -691,13 +682,7 @@ impl Recorder {
                 Some(id) => {
                     let w =
                         find_window(&content, id).ok_or("ウィンドウが共有可能一覧にありません")?;
-                    // SAFETY: 取得済みの SCWindow からフィルタを作る。
-                    unsafe {
-                        SCContentFilter::initWithDesktopIndependentWindow(
-                            SCContentFilter::alloc(),
-                            &w,
-                        )
-                    }
+                    window_filter(&w)
                 }
                 None => app_audio_filter(&content, self.root_pid)?,
             };
@@ -718,14 +703,14 @@ impl Recorder {
 
     /// ストリームを止め、エンコーダを出し切り、ファイルを確定する。
     pub fn stop(&mut self) -> Option<RecordingSummary> {
-        if let Some(stream) = self.stream.take() {
-            if !self.stopped.load(Ordering::SeqCst) {
-                // SAFETY: 完了ハンドラは任意のキューで呼ばれる。
-                if let Err(e) =
-                    wait_completion(|h| unsafe { stream.stopCaptureWithCompletionHandler(Some(h)) })
-                {
-                    meetrec_core::warn!("キャプチャ停止時のエラー: {e}");
-                }
+        if let Some(stream) = self.stream.take()
+            && !self.stopped.load(Ordering::SeqCst)
+        {
+            // SAFETY: 完了ハンドラは任意のキューで呼ばれる。
+            if let Err(e) =
+                wait_completion(|h| unsafe { stream.stopCaptureWithCompletionHandler(Some(h)) })
+            {
+                meetrec_core::warn!("キャプチャ停止時のエラー: {e}");
             }
         }
         // スロットを空にする。以後のコールバックは何もしない（実行中のものはロックで待ち合わせ済み）。

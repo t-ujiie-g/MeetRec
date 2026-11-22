@@ -3,22 +3,22 @@
 use meetrec_core::config::Mode;
 use meetrec_core::platform::{MenuAction, Notice, TrayModel};
 use meetrec_core::text;
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::Graphics::Gdi::{
-    CreateBitmap, CreateDIBSection, DeleteObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    DIB_RGB_COLORS,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateBitmap, CreateDIBSection, DIB_RGB_COLORS,
+    DeleteObject,
 };
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIM_ADD,
-    NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE,
+    NIM_MODIFY, NIM_SETVERSION, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
-    GetSystemMetrics, PostMessageW, SetForegroundWindow, TrackPopupMenu, HICON, HMENU, ICONINFO,
-    MENU_ITEM_FLAGS, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, SM_CXSMICON,
-    TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_NULL,
+    GetSystemMetrics, HICON, HMENU, ICONINFO, MENU_ITEM_FLAGS, MF_CHECKED, MF_GRAYED, MF_POPUP,
+    MF_SEPARATOR, MF_STRING, PostMessageW, SM_CXSMICON, SetForegroundWindow, TPM_BOTTOMALIGN,
+    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_NULL,
 };
+use windows::core::PCWSTR;
 
 use crate::sys::{copy_wide, wide};
 
@@ -205,8 +205,10 @@ impl Drop for Tray {
 }
 
 unsafe fn item(menu: HMENU, flags: MENU_ITEM_FLAGS, id: usize, label: &str) {
-    let label = wide(label);
-    let _ = AppendMenuW(menu, flags, id, PCWSTR(label.as_ptr()));
+    unsafe {
+        let label = wide(label);
+        let _ = AppendMenuW(menu, flags, id, PCWSTR(label.as_ptr()));
+    }
 }
 
 /// メニューを表示し、選ばれた項目を返す（モーダル。呼び出し中に `MAIN` を借用しないこと）。

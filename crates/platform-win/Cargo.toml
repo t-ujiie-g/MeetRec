@@ -3,9 +3,11 @@ name = "meetrec-win"
 description = "MeetRec の Windows 層（Windows.Graphics.Capture / WASAPI / Media Foundation / Win32）"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
-[dependencies]
+# クレート全体が Windows 専用（`#![cfg(windows)]`）なので、依存もすべて Windows のときだけ。
+[target.'cfg(windows)'.dependencies]
 meetrec-core.workspace = true
 
 [target.'cfg(windows)'.dependencies.windows]
