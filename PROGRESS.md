@@ -153,6 +153,8 @@
 - イベント処理中に WM_ENDSESSION が来た場合（Shutdown はキューに積まれ、メッセージループ終了時に確定する）。
 - メモリ計測は WorkingSetSize を使用（目標値との照合は未実施）。
 - Run キーによる自動起動、多重起動防止ミューテックス、SmartScreen 下での起動。
+- `/DEPENDENTLOADFLAG:0x800`（依存 DLL を System32 からだけ読む。D25）を付けた exe が起動するか。
+- 録画イベントの通知（キュー＋ WM_RECORDER の合図。D27）で、書き込み失敗・映像なしの通知が届くか。
 
 ## CI の確認方法
 - GitHub Actions の実行結果はこのセッションから確認できる（GitHub MCP の actions ツール）。
