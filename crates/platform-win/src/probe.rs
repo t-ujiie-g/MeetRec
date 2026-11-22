@@ -188,6 +188,7 @@ impl Probe {
                     width,
                     height,
                     minimized,
+                    layer: 0,
                 });
                 true.into()
             }

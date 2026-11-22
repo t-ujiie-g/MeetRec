@@ -18,7 +18,9 @@ use windows::Win32::Foundation::{
     HWND, LPARAM, LRESULT, WPARAM,
 };
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::Registry::{
@@ -27,7 +29,11 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, GetProcessTimes};
-use windows::Win32::UI::Shell::{NIN_BALLOONUSERCLICK, NIN_SELECT, ShellExecuteW};
+use windows::Win32::UI::Shell::{
+    FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, IShellItem,
+    NIN_BALLOONUSERCLICK, NIN_SELECT, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+    ShellExecuteW,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, IDYES,
     KillTimer, MB_ICONINFORMATION, MB_SETFOREGROUND, MB_YESNO, MSG, MessageBoxW,
@@ -423,6 +429,36 @@ impl Platform for WinPlatform {
         open_path(path);
     }
 
+    fn choose_folder(&mut self, current: &Path) -> Option<PathBuf> {
+        // SAFETY: メインスレッドは STA で COM を初期化済み。文字列は呼び出しの間だけ生きていればよい。
+        unsafe {
+            let dialog: IFileOpenDialog =
+                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+            let options = dialog.GetOptions().ok()?;
+            dialog
+                .SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)
+                .ok()?;
+            let title = wide(text::CHOOSE_FOLDER_TITLE);
+            let _ = dialog.SetTitle(PCWSTR(title.as_ptr()));
+            let start = wide(&current.to_string_lossy());
+            if let Ok(item) =
+                SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(start.as_ptr()), None)
+            {
+                let _ = dialog.SetFolder(&item);
+            }
+            // キャンセルはエラー（ERROR_CANCELLED）として返る。
+            dialog.Show(Some(self.hwnd)).ok()?;
+            let name = dialog
+                .GetResult()
+                .ok()?
+                .GetDisplayName(SIGDN_FILESYSPATH)
+                .ok()?;
+            let path = name.to_string().ok().map(PathBuf::from);
+            CoTaskMemFree(Some(name.0 as *const _));
+            path
+        }
+    }
+
     fn set_autostart(&mut self, enabled: bool) -> Result<(), String> {
         unsafe {
             let mut key = HKEY::default();
@@ -515,6 +551,13 @@ impl Platform for WinPlatform {
             r.retarget(window);
         }
     }
+
+    fn retarget_screen(&mut self, _near: &WindowInfo) -> bool {
+        // 未対応（モニター全体のキャプチャは未実装）。core は参加者のビデオパネルの録画を続ける。
+        false
+    }
+
+    fn end_screen(&mut self) {}
 
     fn stop_recording(&mut self) -> Option<RecordingSummary> {
         self.recorder.take().map(|r| r.stop())

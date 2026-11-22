@@ -11,6 +11,7 @@ pub const STATUS_PROMPT: &str = "会議を検出（確認待ち）";
 pub const MENU_RECORD_NOW: &str = "今すぐ録画";
 pub const MENU_STOP: &str = "録画を停止";
 pub const MENU_OPEN_FOLDER: &str = "録画フォルダを開く";
+pub const MENU_CHOOSE_FOLDER: &str = "保存先を変更…";
 pub const MENU_MODE: &str = "会議を検出したとき";
 pub const MENU_AUTOSTART: &str = "ログイン時に起動";
 pub const MENU_DIAGNOSTICS: &str = "診断ログを保存";
@@ -62,6 +63,12 @@ pub const NOTICE_START_FAILED: &str = "録画を開始できませんでした";
 pub const NOTICE_FAILED: &str = "録画が中断されました";
 pub const NOTICE_RECOVERED: &str = "前回正常に終了しなかった録画を修復しました";
 pub const NOTICE_DIAGNOSTICS: &str = "診断ログを保存しました（クリックでフォルダを開く）";
+pub const NOTICE_FOLDER_CHANGED: &str = "保存先を変更しました（クリックでフォルダを開く）";
+pub const NOTICE_FOLDER_UNUSABLE: &str = "このフォルダには保存できません";
+pub const CHOOSE_FOLDER_TITLE: &str = "録画の保存先を選んでください";
+/// OS の通知の代わりに出すアプリ内パネルのボタン（macOS）。
+pub const TOAST_OPEN: &str = "フォルダを開く";
+pub const TOAST_CLOSE: &str = "閉じる";
 pub const NOTICE_AUTOSTART_FAILED: &str = "ログイン時の起動を設定できませんでした";
 
 #[cfg(test)]

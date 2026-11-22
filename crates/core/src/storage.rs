@@ -8,6 +8,9 @@ use std::time::{Duration, SystemTime};
 use crate::mp4;
 use crate::platform::LocalTime;
 
+/// 録画の既定保存先（ホームフォルダ直下の「ダウンロード」）。
+const DOWNLOADS: &str = "Downloads";
+
 /// アプリの各種ディレクトリ。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dirs {
@@ -18,8 +21,9 @@ pub struct Dirs {
 }
 
 impl Dirs {
-    /// 環境変数から決める。macOS: ~/Library/Application Support/MeetRec と ~/Movies/MeetRec、
-    /// Windows: %APPDATA%\MeetRec と %USERPROFILE%\Videos\MeetRec。
+    /// 環境変数から決める。設定などは macOS: ~/Library/Application Support/MeetRec、
+    /// Windows: %APPDATA%\MeetRec。録画の既定保存先はどちらも「ダウンロード」フォルダ
+    /// （~/Downloads、%USERPROFILE%\Downloads）。見つけやすさを優先する（D28）。
     pub fn from_env() -> Dirs {
         let var = |k: &str| std::env::var_os(k).map(PathBuf::from);
         if cfg!(windows) {
@@ -27,7 +31,7 @@ impl Dirs {
             let appdata = var("APPDATA").unwrap_or_else(|| profile.join("AppData").join("Roaming"));
             Dirs {
                 state: appdata.join("MeetRec"),
-                default_output: profile.join("Videos").join("MeetRec"),
+                default_output: profile.join(DOWNLOADS),
             }
         } else {
             let home = var("HOME").unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -40,7 +44,7 @@ impl Dirs {
             };
             Dirs {
                 state,
-                default_output: home.join("Movies").join("MeetRec"),
+                default_output: home.join(DOWNLOADS),
             }
         }
     }
@@ -267,6 +271,13 @@ mod tests {
             minute: 30,
             second: 5,
         }
+    }
+
+    #[test]
+    fn recordings_go_to_downloads_by_default() {
+        let dirs = Dirs::from_env();
+        assert_eq!(dirs.default_output.file_name().unwrap(), "Downloads");
+        assert_ne!(dirs.default_output, dirs.state);
     }
 
     #[test]

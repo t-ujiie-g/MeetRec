@@ -106,6 +106,51 @@ fn window_filter(window: &SCWindow) -> Retained<SCContentFilter> {
     unsafe { SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), window) }
 }
 
+/// ディスプレイ全体を録るフィルタ（自分の画面共有中）。`near` のウィンドウがあるディスプレイを選び、
+/// 見つからなければ最初のディスプレイにする。MeetRec 自身のパネルは映さない。
+fn display_filter(
+    content: &SCShareableContent,
+    near: u64,
+) -> Result<Retained<SCContentFilter>, String> {
+    // SAFETY: 取得済みの不変オブジェクトを読むだけ。
+    unsafe {
+        let displays = content.displays();
+        let center = find_window(content, near).map(|w| {
+            let f = w.frame();
+            (
+                f.origin.x + f.size.width / 2.0,
+                f.origin.y + f.size.height / 2.0,
+            )
+        });
+        let display = center
+            .and_then(|(x, y)| {
+                displays.iter().find(|d| {
+                    let f = d.frame();
+                    x >= f.origin.x
+                        && x < f.origin.x + f.size.width
+                        && y >= f.origin.y
+                        && y < f.origin.y + f.size.height
+                })
+            })
+            .or_else(|| displays.iter().next())
+            .ok_or("ディスプレイが見つかりません")?;
+        let me = sys::own_pid();
+        let own: Vec<_> = content
+            .applications()
+            .iter()
+            .filter(|a| a.processID() as u32 == me)
+            .collect();
+        Ok(
+            SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
+                SCContentFilter::alloc(),
+                &display,
+                &NSArray::from_retained_slice(&own),
+                &NSArray::new(),
+            ),
+        )
+    }
+}
+
 /// 完了ハンドラ（エラーのみ）を待つ。
 fn wait_completion(
     call: impl FnOnce(&block2::DynBlock<dyn Fn(*mut NSError)>),
@@ -122,6 +167,36 @@ fn wait_completion(
     }
 }
 
+/// フィルタと設定から SCStream を作り、出力先を登録して開始する。
+/// `output` は呼び出し側がストリームより長く保持すること（SCStream は出力先を弱く持つ）。
+fn open_stream(
+    filter: &SCContentFilter,
+    config: &SCStreamConfiguration,
+    output: &StreamOutput,
+    kinds: &[SCStreamOutputType],
+    queue: &DispatchQueue,
+) -> Result<Retained<SCStream>, String> {
+    // SAFETY: 出力オブジェクトは呼び出し側が保持し続ける。
+    let stream = unsafe {
+        let stream = SCStream::initWithFilter_configuration_delegate(
+            SCStream::alloc(),
+            filter,
+            config,
+            Some(ProtocolObject::from_ref(output)),
+        );
+        let target: &ProtocolObject<dyn SCStreamOutput> = ProtocolObject::from_ref(output);
+        for kind in kinds {
+            stream
+                .addStreamOutput_type_sampleHandlerQueue_error(target, *kind, Some(queue))
+                .map_err(|e| format!("出力を追加できません: {}", e.localizedDescription()))?;
+        }
+        stream
+    };
+    // SAFETY: 完了ハンドラは任意のキューで呼ばれる。メインスレッドは短時間待つだけ。
+    wait_completion(|h| unsafe { stream.startCaptureWithCompletionHandler(Some(h)) })?;
+    Ok(stream)
+}
+
 // ---------------------------------------------------------------------------
 // サンプルを受ける側
 // ---------------------------------------------------------------------------
@@ -132,6 +207,8 @@ struct Active {
     encoder: Option<VideoEncoder>,
     gate: FrameGate,
     clock: Arc<ClockOffset>,
+    /// 映像を画面用のストリームから取る（自分の画面共有中）。false ならウィンドウのストリームから。
+    use_screen: bool,
     raw: Vec<u8>,
     pcm: Vec<f32>,
     abl: Vec<u64>,
@@ -280,6 +357,8 @@ type Slot = Arc<Mutex<Option<Active>>>;
 struct OutputIvars {
     slot: Slot,
     stopped: Arc<AtomicBool>,
+    /// 画面用のストリーム（映像だけ）の出力先か。
+    screen: bool,
 }
 
 define_class!(
@@ -297,7 +376,10 @@ define_class!(
             let mut guard = self.ivars().slot.lock().unwrap();
             let Some(active) = guard.as_mut() else { return };
             if kind == SCStreamOutputType::Screen {
-                active.video(sbuf);
+                // 映像は、今使っている側のストリームのものだけをエンコードする。
+                if active.use_screen == self.ivars().screen {
+                    active.video(sbuf);
+                }
             } else if kind == SCStreamOutputType::Audio {
                 active.audio(SRC_APP, sbuf);
             } else if kind == SCStreamOutputType::Microphone {
@@ -311,14 +393,23 @@ define_class!(
         fn did_stop(&self, _stream: &SCStream, error: &NSError) {
             let msg = format!("{} (code {})", error.localizedDescription(), error.code());
             self.ivars().stopped.store(true, Ordering::SeqCst);
+            if self.ivars().screen {
+                // 画面用のストリームは映像だけ。止まっても録画（音声）は続くので知らせるだけにする。
+                meetrec_core::warn!("画面のキャプチャが停止しました: {msg}");
+                return;
+            }
             app::post(Item::StreamStopped(msg));
         }
     }
 );
 
 impl StreamOutput {
-    fn new(slot: Slot, stopped: Arc<AtomicBool>) -> Retained<StreamOutput> {
-        let this = Self::alloc().set_ivars(OutputIvars { slot, stopped });
+    fn new(slot: Slot, stopped: Arc<AtomicBool>, screen: bool) -> Retained<StreamOutput> {
+        let this = Self::alloc().set_ivars(OutputIvars {
+            slot,
+            stopped,
+            screen,
+        });
         // SAFETY: NSObject の init を呼ぶだけ。
         unsafe { msg_send![super(this), init] }
     }
@@ -327,6 +418,14 @@ impl StreamOutput {
 // ---------------------------------------------------------------------------
 // メインスレッド側
 // ---------------------------------------------------------------------------
+
+/// 自分の画面共有中だけ動かす、ディスプレイ全体の映像ストリーム。
+struct ScreenCapture {
+    stream: Retained<SCStream>,
+    // SCStream は出力先を弱く持つので保持しておく。
+    _output: Retained<StreamOutput>,
+    stopped: Arc<AtomicBool>,
+}
 
 pub struct Recorder {
     slot: Slot,
@@ -344,6 +443,7 @@ pub struct Recorder {
     /// 現在のストリームが映像出力付きか（音声だけの代替ストリームなら false）。
     stream_video: bool,
     last_restart_ns: u64,
+    screen: Option<ScreenCapture>,
 }
 
 impl Recorder {
@@ -385,7 +485,7 @@ impl Recorder {
         let slot: Slot = Arc::new(Mutex::new(None));
         let stopped = Arc::new(AtomicBool::new(false));
         let mut rec = Recorder {
-            output: StreamOutput::new(slot.clone(), stopped.clone()),
+            output: StreamOutput::new(slot.clone(), stopped.clone(), false),
             slot,
             queue: DispatchQueue::new("meetrec.capture", None),
             stream: None,
@@ -402,6 +502,7 @@ impl Recorder {
             audio_only: window.is_none(),
             stream_video: false,
             last_restart_ns: 0,
+            screen: None,
         };
 
         let clock = Arc::new(ClockOffset::new());
@@ -499,6 +600,7 @@ impl Recorder {
             encoder,
             gate: FrameGate::new(rec.fps),
             clock,
+            use_screen: false,
             raw: Vec::new(),
             pcm: Vec::new(),
             abl: Vec::new(),
@@ -548,37 +650,17 @@ impl Recorder {
     /// フィルタから SCStream を作って開始する（初回・再構築の両方で使う）。
     fn start_stream(&mut self, filter: &SCContentFilter, video: bool) -> Result<(), String> {
         let config = self.configuration(video);
-        // SAFETY: 出力オブジェクトは self.output が保持し続ける。
-        let stream = unsafe {
-            let stream = SCStream::initWithFilter_configuration_delegate(
-                SCStream::alloc(),
-                filter,
-                &config,
-                Some(ProtocolObject::from_ref(&*self.output)),
-            );
-            let output: &ProtocolObject<dyn SCStreamOutput> =
-                ProtocolObject::from_ref(&*self.output);
-            let mut kinds = vec![SCStreamOutputType::Audio];
-            if video {
-                kinds.push(SCStreamOutputType::Screen);
-            }
-            if self.settings.capture_mic {
-                kinds.push(SCStreamOutputType::Microphone);
-            }
-            for kind in kinds {
-                stream
-                    .addStreamOutput_type_sampleHandlerQueue_error(output, kind, Some(&self.queue))
-                    .map_err(|e| format!("出力を追加できません: {}", e.localizedDescription()))?;
-            }
-            stream
-        };
-        // SAFETY: 完了ハンドラは任意のキューで呼ばれる。メインスレッドは短時間待つだけ。
-        let started =
-            wait_completion(|h| unsafe { stream.startCaptureWithCompletionHandler(Some(h)) });
+        let mut kinds = vec![SCStreamOutputType::Audio];
+        if video {
+            kinds.push(SCStreamOutputType::Screen);
+        }
+        if self.settings.capture_mic {
+            kinds.push(SCStreamOutputType::Microphone);
+        }
+        let started = open_stream(filter, &config, &self.output, &kinds, &self.queue);
         // 開始できたときだけ「動作中」にする（失敗時は停止扱いのままにして復旧経路を残す）。
         self.stopped.store(started.is_err(), Ordering::SeqCst);
-        started?;
-        self.stream = Some(stream);
+        self.stream = Some(started?);
         self.stream_video = video;
         Ok(())
     }
@@ -605,12 +687,74 @@ impl Recorder {
         }
     }
 
+    /// 映像を `near` のウィンドウがあるディスプレイ全体に切り替える（自分の画面共有中）。
+    /// 音声はこれまでのストリームで録り続け、映像だけを別のストリームから取る。
+    pub fn show_screen(&mut self, near: &WindowInfo) -> bool {
+        if self.audio_only {
+            return false;
+        }
+        self.hide_screen();
+        let result = shareable_content().and_then(|content| {
+            let filter = display_filter(&content, near.id)?;
+            let config = self.configuration(true);
+            let stopped = Arc::new(AtomicBool::new(false));
+            let output = StreamOutput::new(self.slot.clone(), stopped.clone(), true);
+            // 音声はウィンドウ側のストリームで録る（画面側で録ると他のアプリの音が入る）。
+            // SAFETY: 開始前の設定オブジェクトのプロパティを変えるだけ。
+            unsafe {
+                config.setCapturesAudio(false);
+                config.setCaptureMicrophone(false);
+            }
+            let kinds = [SCStreamOutputType::Screen];
+            let stream = open_stream(&filter, &config, &output, &kinds, &self.queue)?;
+            Ok(ScreenCapture {
+                stream,
+                _output: output,
+                stopped,
+            })
+        });
+        match result {
+            Ok(screen) => {
+                self.screen = Some(screen);
+                self.use_screen(true);
+                true
+            }
+            Err(e) => {
+                meetrec_core::warn!("画面の録画に切り替えられません: {e}");
+                false
+            }
+        }
+    }
+
+    /// 画面の録画をやめる（映像はウィンドウ側のストリームに戻る）。
+    pub fn hide_screen(&mut self) {
+        let Some(screen) = self.screen.take() else {
+            return;
+        };
+        self.use_screen(false);
+        if !screen.stopped.load(Ordering::SeqCst) {
+            // SAFETY: 完了ハンドラは任意のキューで呼ばれる。
+            if let Err(e) = wait_completion(|h| unsafe {
+                screen.stream.stopCaptureWithCompletionHandler(Some(h))
+            }) {
+                meetrec_core::warn!("画面のキャプチャ停止時のエラー: {e}");
+            }
+        }
+    }
+
+    fn use_screen(&self, on: bool) {
+        if let Some(active) = self.slot.lock().unwrap().as_mut() {
+            active.use_screen = on;
+        }
+    }
+
     /// 録画対象ウィンドウを張り替える。ストリームが止まっていれば作り直す。
     /// 戻り値 false：映像も音声も取れない状態になった（録画を続けても何も入らない）。
     pub fn retarget(&mut self, window: &WindowInfo) -> bool {
         if self.audio_only {
             return true;
         }
+        self.hide_screen();
         let result = shareable_content().and_then(|content| {
             let w =
                 find_window(&content, window.id).ok_or("ウィンドウが共有可能一覧にありません")?;
@@ -703,6 +847,7 @@ impl Recorder {
 
     /// ストリームを止め、エンコーダを出し切り、ファイルを確定する。
     pub fn stop(&mut self) -> Option<RecordingSummary> {
+        self.hide_screen();
         if let Some(stream) = self.stream.take()
             && !self.stopped.load(Ordering::SeqCst)
         {
