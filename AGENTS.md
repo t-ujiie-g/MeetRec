@@ -45,6 +45,7 @@ crates/platform-mac    macOS 層（ScreenCaptureKit / VideoToolbox / AudioToolbo
 crates/platform-win    Windows 層（Windows.Graphics.Capture / Media Foundation / WASAPI / Win32）
 crates/app             エントリポイント（`main.rs`）と Windows のマニフェスト埋め込み（`build.rs`）
 packaging/macos        .app の組み立てと署名
+packaging/windows      インストーラ（Inno Setup の `MeetRec.iss`。CI の Windows ジョブが `MeetRec-setup.exe` を作る）
 docs                   実機確認の手順、署名・公証の手順
 ```
 
@@ -96,7 +97,7 @@ docs                   実機確認の手順、署名・公証の手順
   - ソフトウェアエンコードに落ちたときの fps の下げ方は OS で違う（mac は半分で下限 5、win は上限 5）。
     実機で確かめるまで揃えない（D23）。
 - 点検後に通すコマンド: 上の「コマンド」の `cargo fmt` / `cargo clippy`（今いる OS ともう一方の OS）/ `cargo test`。
-  packaging を触ったら `bundle.sh` も実行する。
+  packaging を触ったら `bundle.sh` も実行する。Windows のインストーラは手元の Mac では作れないので、CI の成果物で確かめる。
 - 手で確かめる手順: OS 層（`platform-*`）には自動テストが無い。変えた分岐に当たる [docs/manual-test.md](docs/manual-test.md) の項目を示し、
   今いる OS のぶんは実際に動かす。もう一方の OS は型検査までしかできないので、その旨を PR に書き、PROGRESS.md の「未検証事項」に足す。
 - 依存の脆弱性: `cargo audit`（無ければ `Cargo.lock` の全クレートを OSV に照会）と `cargo update --dry-run --verbose`。

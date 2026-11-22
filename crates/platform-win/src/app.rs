@@ -303,7 +303,7 @@ pub fn run(app: Box<dyn App>) {
         TASKBAR_CREATED.with(|c| c.set(RegisterWindowMessageW(w!("TaskbarCreated"))));
 
         let tick_ms = app.tick_seconds().max(2) * 1000;
-        let plat = WinPlatform {
+        let mut plat = WinPlatform {
             hwnd,
             tray: Tray::new(hwnd, WM_TRAY),
             prompt: Prompt::new(hwnd, WM_PROMPT_ANSWER),
@@ -311,6 +311,13 @@ pub fn run(app: Box<dyn App>) {
             recorder: None,
             last_open: None,
         };
+        // 「ログイン時に起動」が有効なら、今の実行ファイルの場所で登録し直す。置き場所を変えた・
+        // インストーラで入れ直した場合に、古い場所を指したままにしない。
+        if plat.autostart_enabled()
+            && let Err(e) = plat.set_autostart(true)
+        {
+            meetrec_core::warn!("ログイン時の起動を登録し直せません: {e}");
+        }
         MAIN.with(|m| *m.borrow_mut() = Some(Main { app, plat }));
         dispatch(UiEvent::Launched);
         // 許容遅延を付けて他のタイマーとまとめてもらう（省電力）。
