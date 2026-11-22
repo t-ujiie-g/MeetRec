@@ -70,13 +70,14 @@ pub struct AppRule {
 
 /// 会議アプリのミュート状態を、画面部品（ボタン・メニュー項目）の名前で見分ける規則。
 /// 部品の名前は「押すとどうなるか」を表すので、「ミュートを解除」があればミュート中。
-/// 名前は完全一致（大文字小文字無視）で比べる。似た名前の別の部品（参加者のミュート解除など）と取り違えないため。
+/// 名前は前方一致（大文字小文字無視）で比べる。Windows の Zoom は名前の後ろにショートカットや説明が付くため。
+/// 似た名前の別の部品（参加者の「ミュート解除」など）と取り違えないよう、書き出しは省かずに書くこと。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct MuteRule {
-    /// この名前の部品があれば、自分はミュート中。
+    /// この名前で始まる部品があれば、自分はミュート中。
     pub muted: Vec<String>,
-    /// この名前の部品があれば、自分はミュートしていない。
+    /// この名前で始まる部品があれば、自分はミュートしていない。
     pub unmuted: Vec<String>,
 }
 
@@ -86,9 +87,10 @@ impl MuteRule {
         self.muted.iter().chain(&self.unmuted).cloned().collect()
     }
 
-    /// 見つかった部品の名前から、ミュート中かを決める。
+    /// 見つかった部品の名前から、ミュート中かを決める。「マイクのミュート」は「マイクのミュートを解除」の
+    /// 書き出しでもあるので、ミュート中の名前に当たるかだけを見る。
     pub fn is_muted(&self, control: &str) -> bool {
-        self.muted.iter().any(|m| m.eq_ignore_ascii_case(control))
+        self.muted.iter().any(|m| starts_with_ci(control, m))
     }
 }
 
@@ -207,10 +209,21 @@ pub fn builtin_rules() -> Vec<AppRule> {
                 "Zoom Workplace",
                 "zoom floating video window",
             ]),
-            // macOS：メニューバーの「ミーティング」にある項目（日本語は実機で確認。英語は未検証）。
+            // macOS：メニューバーの「ミーティング」にある項目。Windows：会議ウィンドウのボタン
+            // （後ろにショートカットや説明が続く）。日本語は両 OS とも実機で確認。英語は未検証。
             mute: MuteRule {
-                muted: s(&["オーディオのミュート解除", "Unmute Audio"]),
-                unmuted: s(&["オーディオのミュート", "Mute Audio"]),
+                muted: s(&[
+                    "オーディオのミュート解除",
+                    "ミュート解除、現在ミュート中",
+                    "Unmute Audio",
+                    "Unmute, currently muted",
+                ]),
+                unmuted: s(&[
+                    "オーディオのミュート",
+                    "ミュート、現在ミュート解除中",
+                    "Mute Audio",
+                    "Mute, currently unmuted",
+                ]),
             },
         },
         AppRule {
@@ -298,7 +311,7 @@ pub fn builtin_rules() -> Vec<AppRule> {
                 "会議への参加  会議",
                 "Join a meeting  meeting",
             ]),
-            // macOS：会議ウィンドウのボタン（日本語は実機で確認。英語は未検証）。
+            // 会議ウィンドウのボタン（日本語は両 OS とも実機で確認。英語は未検証）。
             mute: MuteRule {
                 muted: s(&["マイクのミュートを解除", "Unmute mic"]),
                 unmuted: s(&["マイクのミュート", "Mute mic"]),
@@ -381,6 +394,11 @@ pub struct Rules {
 fn norm_proc(name: &str) -> String {
     let lower = name.to_lowercase();
     lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+/// `text` が `prefix` で始まるか（大文字小文字無視）。OS 層が部品を探すときにも使う。
+pub fn starts_with_ci(text: &str, prefix: &str) -> bool {
+    text.to_lowercase().starts_with(&prefix.to_lowercase())
 }
 
 fn contains_ci(haystack_lower: &str, needle: &str) -> bool {
@@ -685,9 +703,22 @@ pub(crate) mod tests {
         let zoom = &r.apps.iter().find(|a| a.id == "zoom").unwrap().mute;
         assert!(zoom.is_muted("オーディオのミュート解除"));
         assert!(!zoom.is_muted("オーディオのミュート"));
-        // 同じ画面にある別の部品（参加者向けの「ミュート解除」）は探す対象に入れない。
-        assert!(!teams.names().iter().any(|n| n == "ミュート解除"));
-        assert!(teams.names().contains(&"マイクのミュート".to_string()));
+        // 実機（Windows・日本語の Zoom）のボタンは、後ろにショートカットや説明が続く。
+        assert!(zoom.is_muted(
+            "ミュート解除、現在ミュート中, Alt+A, 自分のオーディオのミュートを解除します（Alt+A）。"
+        ));
+        assert!(!zoom.is_muted("ミュート、現在ミュート解除中, Alt+A"));
+        // 同じ画面にある別の部品（Teams の参加者向け「ミュート解除」、Zoom の「全員をミュート」）は、
+        // どの名前の書き出しにも当たらない。
+        for other in ["ミュート解除", "全員をミュート", "全員にミュート解除を要請"]
+        {
+            for rule in [teams, zoom] {
+                assert!(
+                    !rule.names().iter().any(|n| starts_with_ci(other, n)),
+                    "{other}"
+                );
+            }
+        }
     }
 
     #[test]

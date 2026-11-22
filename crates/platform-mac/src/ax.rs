@@ -9,6 +9,8 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
 
+use meetrec_core::rules::starts_with_ci;
+
 use crate::sys;
 
 /// 1 アプリぶんの書き出しで調べる部品の上限（WebView の木は非常に大きくなりうる）。
@@ -144,7 +146,7 @@ fn walk(element: &AnyObject, depth: usize, budget: &mut usize, out: &mut String)
     }
 }
 
-/// 名前が `names` のどれかと完全一致（大文字小文字無視）する、押せる部品を探す。
+/// 名前が `names` のどれかで始まる（大文字小文字無視）、押せる部品を探す。
 fn search(
     element: &AnyObject,
     names: &[String],
@@ -165,12 +167,12 @@ fn search(
         .find_map(|child| search(child, names, depth + 1, budget))
 }
 
-/// 部品の名前が `names` のどれかと一致すれば、その名前を返す。
+/// 部品の名前が `names` のどれかで始まれば、その名前を返す。
 fn matching_name(element: &AnyObject, names: &[String]) -> Option<String> {
     let title = text(element, "AXTitle")?;
     names
         .iter()
-        .any(|n| n.eq_ignore_ascii_case(&title))
+        .any(|n| starts_with_ci(&title, n))
         .then_some(title)
 }
 
@@ -187,7 +189,7 @@ pub struct ControlWatch {
 }
 
 impl ControlWatch {
-    /// 名前が `names` のどれかと一致する部品を探し、今の名前を返す。
+    /// 名前が `names` のどれかで始まる部品を探し、今の名前を返す。
     pub fn find(&mut self, pid: u32, names: &[String]) -> Option<String> {
         // 許可が無ければ、起動ごとに 1 回だけ OS の案内を出す。
         if !trusted(!self.prompted) {

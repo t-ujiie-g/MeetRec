@@ -49,7 +49,7 @@ use crate::prompt::Prompt;
 use crate::recorder::Recorder;
 use crate::sys::{self, wide};
 use crate::tray::{self, Tray};
-use crate::uia;
+use crate::uia::{self, ControlWatch};
 
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_PROMPT_ANSWER: u32 = WM_APP + 2;
@@ -61,6 +61,8 @@ const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 const TIMER_TICK: usize = 1;
 /// 診断ログに画面部品を書き出すウィンドウの上限（書き出しはウィンドウごとに時間がかかる）。
 const MAX_CONTROL_DUMP_WINDOWS: usize = 8;
+/// ミュートの部品を探すウィンドウの最小の大きさ（影やツールチップ用の小さなウィンドウを省く）。
+const MIN_CONTROL_WINDOW: (u32, u32) = (300, 150);
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const RUN_VALUE: PCWSTR = w!("MeetRec");
 
@@ -311,6 +313,7 @@ pub fn run(app: Box<dyn App>) {
             tray: Tray::new(hwnd, WM_TRAY),
             prompt: Prompt::new(hwnd, WM_PROMPT_ANSWER),
             probe: Probe::new(),
+            controls: ControlWatch::default(),
             recorder: None,
             last_open: None,
         };
@@ -350,6 +353,7 @@ pub struct WinPlatform {
     tray: Tray,
     prompt: Prompt,
     probe: Probe,
+    controls: ControlWatch,
     recorder: Option<Recorder>,
     last_open: Option<PathBuf>,
 }
@@ -583,10 +587,23 @@ impl Platform for WinPlatform {
         }
     }
 
-    fn find_control(&mut self, _pid: u32, _names: &[String]) -> Option<String> {
-        // 未対応：Windows の Zoom / Teams で部品がどう見えるかを、診断ログ（`uia::dump_controls`）で
-        // 確かめてから実装する。それまでは「分からない」を返し、core は自分の声を録り続ける。
-        None
+    fn find_control(&mut self, pid: u32, names: &[String]) -> Option<String> {
+        let probe = &mut self.probe;
+        self.controls.find(pid, names, || {
+            // 会議アプリのウィンドウ：同じプロセス、または同じ実行ファイル名のプロセス（Zoom は複数プロセス）。
+            let exe = sys::process_name(pid).unwrap_or_default();
+            probe
+                .windows()
+                .into_iter()
+                .filter(|w| {
+                    w.owner.pid == pid
+                        || (!exe.is_empty() && w.owner.name.eq_ignore_ascii_case(&exe))
+                })
+                .filter(|w| w.width >= MIN_CONTROL_WINDOW.0 && w.height >= MIN_CONTROL_WINDOW.1)
+                .take(MAX_CONTROL_DUMP_WINDOWS)
+                .map(|w| w.id as isize)
+                .collect()
+        })
     }
 
     fn set_mic_enabled(&mut self, enabled: bool) {
