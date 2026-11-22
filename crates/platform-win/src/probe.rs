@@ -7,8 +7,8 @@ use meetrec_core::platform::{MicUser, ProcInfo, WindowInfo};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Media::Audio::{
-    AudioSessionStateActive, DEVICE_STATE_ACTIVE, IAudioSessionControl2, IAudioSessionManager2,
-    IMMDeviceEnumerator, MMDeviceEnumerator, eCapture,
+    AudioSessionStateActive, DEVICE_STATE_ACTIVE, EDataFlow, IAudioSessionControl2,
+    IAudioSessionManager2, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eRender,
 };
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
@@ -61,43 +61,19 @@ impl Probe {
     }
 
     fn capture_sessions(&mut self) -> Vec<CaptureSession> {
-        let mut out = Vec::new();
+        self.sessions(eCapture)
+    }
+
+    /// 入力（`eCapture`）または出力（`eRender`）の機器を使っているオーディオセッションの一覧。
+    fn sessions(&mut self, flow: EDataFlow) -> Vec<CaptureSession> {
         let Some(en) = self.enumerator() else {
-            return out;
+            return Vec::new();
         };
-        unsafe {
-            let Ok(devices) = en.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) else {
-                // 列挙子が無効になった可能性があるので作り直す。
-                self.enumerator = None;
-                return out;
-            };
-            for i in 0..devices.GetCount().unwrap_or(0) {
-                let Ok(device) = devices.Item(i) else {
-                    continue;
-                };
-                // セッション一覧を最新にするため、マネージャは毎回取り直す。
-                let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else {
-                    continue;
-                };
-                let Ok(sessions) = manager.GetSessionEnumerator() else {
-                    continue;
-                };
-                for n in 0..sessions.GetCount().unwrap_or(0) {
-                    let Ok(control) = sessions.GetSession(n) else {
-                        continue;
-                    };
-                    let Ok(control2) = control.cast::<IAudioSessionControl2>() else {
-                        continue;
-                    };
-                    let pid = control2.GetProcessId().unwrap_or(0);
-                    let active = control
-                        .GetState()
-                        .is_ok_and(|s| s == AudioSessionStateActive);
-                    out.push(CaptureSession { pid, active });
-                }
-            }
-        }
-        out
+        enum_sessions(&en, flow).unwrap_or_else(|| {
+            // 列挙子が無効になった可能性があるので作り直す。
+            self.enumerator = None;
+            Vec::new()
+        })
     }
 
     /// マイク（キャプチャエンドポイント）でストリームが動いているプロセス。
@@ -235,25 +211,34 @@ impl Probe {
                 );
             }
         }
-        let _ = writeln!(s, "-- キャプチャデバイスのオーディオセッション --");
         let me = unsafe { GetCurrentProcessId() };
-        let sessions = self.capture_sessions();
-        if sessions.is_empty() {
-            let _ = writeln!(s, "(なし)");
-        }
-        for c in sessions {
-            let name = procs
-                .iter()
-                .find(|p| p.pid == c.pid)
-                .map(|p| p.name.as_str());
-            let _ = writeln!(
-                s,
-                "pid={} name={} active={}{}",
-                c.pid,
-                name.unwrap_or("?"),
-                c.active,
-                if c.pid == me { " (MeetRec 自身)" } else { "" }
-            );
+        // 出力側は、相手の音をどのプロセスが出しているかを確かめるため（プロセスループバックの対象の
+        // ツリーに入っていないと録れない）。プロセス名と親だけを出す。
+        for (title, flow) in [
+            ("キャプチャデバイス（入力）", eCapture),
+            ("レンダーデバイス（出力）", eRender),
+        ] {
+            let _ = writeln!(s, "-- {title}のオーディオセッション --");
+            let sessions = self.sessions(flow);
+            if sessions.is_empty() {
+                let _ = writeln!(s, "(なし)");
+            }
+            for c in sessions {
+                let entry = procs.iter().find(|p| p.pid == c.pid);
+                let parent = entry.map_or(0, |p| p.parent);
+                let parent_name = procs
+                    .iter()
+                    .find(|p| p.pid == parent)
+                    .map_or("?", |p| p.name.as_str());
+                let _ = writeln!(
+                    s,
+                    "pid={} name={} parent={parent}({parent_name}) active={}{}",
+                    c.pid,
+                    entry.map_or("?", |p| p.name.as_str()),
+                    c.active,
+                    if c.pid == me { " (MeetRec 自身)" } else { "" }
+                );
+            }
         }
         let _ = writeln!(s, "マイクのプライバシー設定: 許可={}", microphone_allowed());
         s
@@ -261,6 +246,73 @@ impl Probe {
 }
 
 /// 本人 → 親 → 祖父…のチェーン。
+/// 機器（入力または出力）を使っているオーディオセッションを列挙する。列挙できなければ None。
+fn enum_sessions(en: &IMMDeviceEnumerator, flow: EDataFlow) -> Option<Vec<CaptureSession>> {
+    let mut out = Vec::new();
+    // SAFETY: COM は呼び出し側のスレッドで初期化済み。取得したインターフェースをその場で使うだけ。
+    unsafe {
+        let devices = en.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE).ok()?;
+        for i in 0..devices.GetCount().unwrap_or(0) {
+            if let Ok(device) = devices.Item(i) {
+                out.extend(device_sessions(&device));
+            }
+        }
+    }
+    Some(out)
+}
+
+/// 1 つの機器を使っているオーディオセッションの一覧。
+unsafe fn device_sessions(device: &IMMDevice) -> Vec<CaptureSession> {
+    let mut out = Vec::new();
+    unsafe {
+        // セッション一覧を最新にするため、マネージャは毎回取り直す。
+        let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else {
+            return out;
+        };
+        let Ok(sessions) = manager.GetSessionEnumerator() else {
+            return out;
+        };
+        for n in 0..sessions.GetCount().unwrap_or(0) {
+            let Ok(control) = sessions.GetSession(n) else {
+                continue;
+            };
+            let Ok(control2) = control.cast::<IAudioSessionControl2>() else {
+                continue;
+            };
+            let pid = control2.GetProcessId().unwrap_or(0);
+            let active = control
+                .GetState()
+                .is_ok_and(|s| s == AudioSessionStateActive);
+            out.push(CaptureSession { pid, active });
+        }
+    }
+    out
+}
+
+/// 会議アプリ（`root` とその子孫のプロセス）が今音を出している出力機器。出していなければ None。
+/// 録音スレッドから呼ぶ（COM 初期化済みであること）。
+pub fn render_device_of(root: u32) -> Option<IMMDevice> {
+    // SAFETY: COM は呼び出し側のスレッドで初期化済み。取得したインターフェースをその場で使うだけ。
+    unsafe {
+        let en: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+        let devices = en.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE).ok()?;
+        let procs = sys::snapshot_processes();
+        for i in 0..devices.GetCount().unwrap_or(0) {
+            let Ok(device) = devices.Item(i) else {
+                continue;
+            };
+            let playing = device_sessions(&device)
+                .iter()
+                .any(|s| s.active && chain_of(&procs, s.pid).iter().any(|p| p.pid == root));
+            if playing {
+                return Some(device);
+            }
+        }
+        None
+    }
+}
+
 pub fn chain_of(procs: &[ProcEntry], pid: u32) -> Vec<ProcInfo> {
     let mut chain = Vec::new();
     let mut cur = pid;

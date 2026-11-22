@@ -66,6 +66,9 @@ pub struct AppRule {
     pub generic_titles: Vec<String>,
     /// 会議アプリのミュート状態の見分け方。空なら見分けない（自分のマイクを録り続ける）。
     pub mute: MuteRule,
+    /// Windows：相手の音として、このアプリの音だけでなく PC から出る音すべてを録る（通知音や他のアプリの音も入る）。
+    /// アプリの音だけを録る方式（プロセス単位）で無音しか届かないアプリ用（D36）。macOS では使わない。
+    pub system_audio: bool,
 }
 
 /// 会議アプリのミュート状態を、画面部品（ボタン・メニュー項目）の名前で見分ける規則。
@@ -225,11 +228,12 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     "Mute, currently unmuted",
                 ]),
             },
+            system_audio: false,
         },
         AppRule {
             id: "teams".into(),
             name: "Teams".into(),
-            // 新 Teams。Windows: ms-teams.exe（音声は子の msedgewebview2.exe）、
+            // 新 Teams。Windows: ms-teams.exe（音を出すのは子の ms-teams.exe。実機で確認）、
             // macOS: MSTeams（バンドル com.microsoft.teams2、音声はヘルパー）。
             process_names: s(&["ms-teams", "msteams", "microsoft teams"]),
             bundle_prefixes: s(&["com.microsoft.teams2"]),
@@ -324,6 +328,8 @@ pub fn builtin_rules() -> Vec<AppRule> {
                 muted: s(&["マイクのミュートを解除", "Unmute mic"]),
                 unmuted: s(&["マイクのミュート", "Mute mic"]),
             },
+            // Windows の Teams は、アプリの音だけを録る方式だと無音しか届かない（実機で確認）。
+            system_audio: true,
         },
     ]
 }
@@ -699,6 +705,15 @@ pub(crate) mod tests {
         assert_eq!(r.score_window(teams, &popup), Some((40, true)));
         popup.layer = 101;
         assert_eq!(r.score_window(teams, &popup), None);
+    }
+
+    #[test]
+    fn only_teams_records_all_pc_audio_on_windows() {
+        // Windows の Teams は、アプリの音だけを録る方式だと無音しか届かなかった（実機で確認）。Zoom は録れる。
+        let r = Rules::new(&[]);
+        let flag = |id: &str| r.apps.iter().find(|a| a.id == id).unwrap().system_audio;
+        assert!(flag("teams"));
+        assert!(!flag("zoom"));
     }
 
     #[test]
