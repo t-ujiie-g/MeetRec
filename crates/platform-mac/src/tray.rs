@@ -20,6 +20,7 @@ const TAG_OPEN: isize = 3;
 const TAG_AUTOSTART: isize = 4;
 const TAG_DIAG: isize = 5;
 const TAG_QUIT: isize = 6;
+const TAG_FOLDER: isize = 7;
 const TAG_MODE_ASK: isize = 10;
 const TAG_MODE_AUTO: isize = 11;
 const TAG_MODE_OFF: isize = 12;
@@ -29,6 +30,7 @@ pub fn action_for_tag(tag: isize) -> Option<MenuAction> {
         TAG_RECORD => MenuAction::RecordNow,
         TAG_STOP => MenuAction::StopNow,
         TAG_OPEN => MenuAction::OpenFolder,
+        TAG_FOLDER => MenuAction::ChooseFolder,
         TAG_AUTOSTART => MenuAction::ToggleAutostart,
         TAG_DIAG => MenuAction::SaveDiagnostics,
         TAG_QUIT => MenuAction::Quit,
@@ -118,6 +120,13 @@ impl Tray {
             mtm,
             text::MENU_OPEN_FOLDER,
             TAG_OPEN,
+            target,
+            action,
+        ));
+        menu.addItem(&menu_item(
+            mtm,
+            text::MENU_CHOOSE_FOLDER,
+            TAG_FOLDER,
             target,
             action,
         ));

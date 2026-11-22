@@ -21,8 +21,21 @@ pub struct WindowRule {
     pub title_any: Vec<String>,
     /// タイトルにいずれかを含んだら不一致。
     pub title_none: Vec<String>,
+    /// タイトルがいずれかと完全に一致（大文字小文字無視）したら不一致。
+    pub title_not_exact: Vec<String>,
+    /// タイトルが空のウィンドウには一致させない。
+    pub title_required: bool,
+    /// 会議ウィンドウと言い切れない、最後の受け皿の規則（Teams の「任意のウィンドウ」）。
+    /// 録画対象を選ぶときは、受け皿でない規則に一致したウィンドウを必ず優先する。
+    pub fallback: bool,
     pub min_width: u32,
     pub min_height: u32,
+    /// 通常以外の階層（`WindowInfo::layer` が 0 以外）のウィンドウにも一致させる。
+    /// 既定は通常の階層だけ（メニューやツールチップを会議ウィンドウと取り違えないため）。
+    pub any_layer: bool,
+    /// 自分が画面共有している間だけ現れるウィンドウ（共有ツールバー等）。
+    /// 映っていれば「共有中」とみなし、共有している画面の録画に切り替える（D31）。
+    pub sharing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -52,6 +65,35 @@ pub struct AppRule {
     /// 取り除いた結果がこれらに一致（大文字小文字無視）したらタイトルなし扱い。
     pub generic_titles: Vec<String>,
 }
+
+/// Teams 本体のウィンドウのタイトルになるタブ名。Windows は「<タブ名> | … | Microsoft Teams」、
+/// macOS はタブ名だけがタイトルになる。
+const TEAMS_TABS: &[&str] = &[
+    "Chat",
+    "Calendar",
+    "Activity",
+    "Teams",
+    "Communities",
+    "Calls",
+    "Files",
+    "OneDrive",
+    "Apps",
+    "Copilot",
+    "Settings",
+    "Meet",
+    "チャット",
+    "カレンダー",
+    "予定表",
+    "アクティビティ",
+    "最新情報",
+    "チーム",
+    "コミュニティ",
+    "通話",
+    "ファイル",
+    "アプリ",
+    "設定",
+    "ミーティング",
+];
 
 fn s(items: &[&str]) -> Vec<String> {
     items.iter().map(|x| x.to_string()).collect()
@@ -83,6 +125,8 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     ]),
                     min_width: 200,
                     min_height: 150,
+                    // 「常に手前に表示」にしていると通常以外の階層になる。
+                    any_layer: true,
                     ..Default::default()
                 },
                 // Windows の会議ウィンドウクラス（タイトルが会議名に変わる版への備え）。
@@ -106,6 +150,8 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     score: 70,
                     capture: true,
                     title_any: s(&["zoom floating video window", "zoom floating video"]),
+                    // macOS では常に手前に出るパネル（通常以外の階層）。
+                    any_layer: true,
                     ..Default::default()
                 },
                 // 画面共有中のツールバー類（録画対象にはしない）。
@@ -113,12 +159,15 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     score: 40,
                     capture: false,
                     class_any: s(&["ZPToolBarParentWndClass", "ZPFloatToolbarClass"]),
+                    sharing: true,
                     ..Default::default()
                 },
                 WindowRule {
                     score: 40,
                     capture: false,
                     title_any: s(&["zoom share toolbar window", "zoom share statusbar window"]),
+                    any_layer: true,
+                    sharing: true,
                     ..Default::default()
                 },
             ],
@@ -158,38 +207,44 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     score: 90,
                     capture: true,
                     title_any: s(&["| Microsoft Teams"]),
-                    title_none: s(&[
-                        "Chat |",
-                        "Calendar |",
-                        "Activity |",
-                        "Teams |",
-                        "Communities |",
-                        "Calls |",
-                        "Files |",
-                        "OneDrive |",
-                        "Apps |",
-                        "Copilot |",
-                        "Settings |",
-                        "チャット |",
-                        "カレンダー |",
-                        "予定表 |",
-                        "アクティビティ |",
-                        "最新情報 |",
-                        "チーム |",
-                        "コミュニティ |",
-                        "通話 |",
-                        "ファイル |",
-                        "アプリ |",
-                        "設定 |",
-                    ]),
+                    title_none: TEAMS_TABS.iter().map(|t| format!("{t} |")).collect(),
                     min_width: 200,
                     min_height: 150,
+                    ..Default::default()
+                },
+                // macOS の会議ウィンドウ：タイトルが会議名だけ（「| Microsoft Teams」が付かない）。
+                // 本体のウィンドウはタブ名だけがタイトルになるので、それ以外を会議ウィンドウとみなす（実機で確認）。
+                // 退出後もこのウィンドウは隠れたまま残ることがあるので、strong_score（90）未満にして
+                // 「マイクが解放されても会議継続」の根拠にはしない（実機で録画が止まらなかった）。
+                WindowRule {
+                    score: 80,
+                    capture: true,
+                    title_required: true,
+                    title_none: s(&["| Microsoft Teams", "teams.microsoft.com"]),
+                    title_not_exact: TEAMS_TABS
+                        .iter()
+                        .chain(&["Microsoft Teams"])
+                        .map(|t| t.to_string())
+                        .collect(),
+                    min_width: 200,
+                    min_height: 150,
+                    ..Default::default()
+                },
+                // 自分が画面共有している間、共有している画面を覆う枠（macOS で実機確認。常に最前面の階層）。
+                // 共有しているディスプレイの目印にする。録画対象にはしない。
+                WindowRule {
+                    score: 40,
+                    capture: false,
+                    title_any: s(&["Sharing Indicator"]),
+                    any_layer: true,
+                    sharing: true,
                     ..Default::default()
                 },
                 // フォールバック：Teams の任意のウィンドウ。
                 WindowRule {
                     score: 40,
                     capture: true,
+                    fallback: true,
                     min_width: 300,
                     min_height: 200,
                     ..Default::default()
@@ -200,7 +255,18 @@ pub fn builtin_rules() -> Vec<AppRule> {
                 "Meeting compact view |",
                 "会議のコンパクト ビュー |",
             ]),
-            generic_titles: s(&["Microsoft Teams", "Meeting", "会議", "Call", "通話"]),
+            generic_titles: s(&[
+                "Microsoft Teams",
+                "Meeting",
+                "会議",
+                "Call",
+                "通話",
+                "Meet",
+                "ミーティング",
+                // 参加前の画面（「会議への参加 | Microsoft Teams 会議」から「| Microsoft Teams」を除いた残り）。
+                "会議への参加  会議",
+                "Join a meeting  meeting",
+            ]),
         },
     ]
 }
@@ -210,6 +276,11 @@ pub struct ScoredWindow {
     pub app: usize,
     pub score: i32,
     pub capture: bool,
+    /// 自分が画面共有中であることを示すウィンドウ（`WindowRule::sharing`）。
+    pub sharing: bool,
+    /// 会議ウィンドウ（またはその代わり）と言い切れるウィンドウ。受け皿の規則
+    /// （`WindowRule::fallback`）にしか一致しなかったものは false。
+    pub definite: bool,
     pub info: WindowInfo,
 }
 
@@ -219,6 +290,9 @@ pub struct Observation {
     /// マイク使用中の会議アプリ（アプリ番号, ルート PID）。
     pub mic_apps: Vec<(usize, Pid)>,
     pub windows: Vec<ScoredWindow>,
+    /// 会議アプリのウィンドウのうち、どの規則にも一致しなかったもの（映っているものだけ）。
+    /// 判定には使わない。録画中のログに出して、規則の不足を実機で見つけるためのもの。
+    pub unmatched: Vec<(usize, WindowInfo)>,
 }
 
 impl Observation {
@@ -229,20 +303,29 @@ impl Observation {
             .map(|(_, p)| *p)
     }
 
-    /// 録画対象として最良のウィンドウ（非最小化 → 点数 → 面積の順）。
+    /// 録画対象として最良のウィンドウ（会議ウィンドウらしさ → 非最小化 → 点数 → 面積の順）。
     /// 最小化中のウィンドウは映像が止まるので、映っているウィンドウ（Zoom のミニウィンドウ等）
-    /// があればそちらを優先する。
+    /// があればそちらを優先する。ただし会議ウィンドウが隠れていても、会議ウィンドウと言い切れない
+    /// ウィンドウ（Teams の本体など）へは移らない。
     pub fn best_window(&self, app: usize, min_score: i32) -> Option<&ScoredWindow> {
         self.windows
             .iter()
             .filter(|w| w.app == app && w.capture && w.score >= min_score)
             .max_by_key(|w| {
                 (
+                    w.definite,
                     !w.info.minimized,
                     w.score,
                     w.info.width as u64 * w.info.height as u64,
                 )
             })
+    }
+
+    /// 自分が画面共有中なら、その目印になるウィンドウ（映っているもの）を返す。
+    pub fn sharing_window(&self, app: usize) -> Option<&ScoredWindow> {
+        self.windows
+            .iter()
+            .find(|w| w.app == app && w.sharing && !w.info.minimized)
     }
 
     pub fn max_score(&self, app: usize) -> Option<i32> {
@@ -317,9 +400,22 @@ impl Rules {
     }
 
     pub fn score_window(&self, app: usize, w: &WindowInfo) -> Option<(i32, bool)> {
+        self.best_rule(app, w).map(|r| (r.score, r.capture))
+    }
+
+    /// ウィンドウに一致する規則のうち、最も点数の高いもの（同点なら先に書かれたもの）。
+    fn best_rule(&self, app: usize, w: &WindowInfo) -> Option<&WindowRule> {
+        // 通常以外の階層のパネルは、会議の外でも隠れたまま残る（Zoom のビデオパネルで実機確認）。
+        // 映っていないものは「無い」ものとして扱う。通常の階層の最小化とは区別する。
+        if w.layer != 0 && w.minimized {
+            return None;
+        }
         let title = w.title.to_lowercase();
-        let mut best: Option<(i32, bool)> = None;
+        let mut best: Option<&WindowRule> = None;
         for r in &self.apps[app].windows {
+            if w.layer != 0 && !r.any_layer {
+                continue;
+            }
             if w.width < r.min_width || w.height < r.min_height {
                 continue;
             }
@@ -334,8 +430,17 @@ impl Rules {
             if r.title_none.iter().any(|t| contains_ci(&title, t)) {
                 continue;
             }
-            if best.is_none_or(|(s, _)| r.score > s) {
-                best = Some((r.score, r.capture));
+            if r.title_required && title.trim().is_empty() {
+                continue;
+            }
+            if r.title_not_exact
+                .iter()
+                .any(|t| t.to_lowercase() == title.trim())
+            {
+                continue;
+            }
+            if best.is_none_or(|b| r.score > b.score) {
+                best = Some(r);
             }
         }
         best
@@ -354,15 +459,20 @@ impl Rules {
             if w.width == 0 || w.height == 0 {
                 continue;
             }
-            if let Some(app) = self.app_for_proc(&w.owner)
-                && let Some((score, capture)) = self.score_window(app, w)
-            {
-                obs.windows.push(ScoredWindow {
+            let Some(app) = self.app_for_proc(&w.owner) else {
+                continue;
+            };
+            match self.best_rule(app, w) {
+                Some(rule) => obs.windows.push(ScoredWindow {
                     app,
-                    score,
-                    capture,
+                    score: rule.score,
+                    capture: rule.capture,
+                    sharing: rule.sharing,
+                    definite: !rule.fallback,
                     info: w.clone(),
-                });
+                }),
+                None if !w.minimized => obs.unmatched.push((app, w.clone())),
+                None => {}
             }
         }
         obs
@@ -422,6 +532,7 @@ pub(crate) mod tests {
             width: w,
             height: h,
             minimized: false,
+            layer: 0,
         }
     }
 
@@ -505,6 +616,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn floating_layers_match_only_rules_that_allow_them() {
+        let r = Rules::new(&[]);
+        let mac = || proc_(1, "zoom.us", Some("us.zoom.xos"));
+        // macOS：共有中のビデオパネルは常に手前に出る階層にある。
+        let mut float = win(1, mac(), "zoom floating video window", "", 240, 135);
+        float.layer = 3;
+        assert_eq!(r.score_window(0, &float), Some((70, true)));
+        // 隠れたまま残っているパネルは数えない（会議が終わっても残るため）。
+        float.minimized = true;
+        assert_eq!(r.score_window(0, &float), None);
+        // 「常に手前に表示」の会議ウィンドウ。
+        let mut meeting = win(2, mac(), "Zoom ミーティング", "", 1280, 720);
+        meeting.layer = 3;
+        assert_eq!(r.score_window(0, &meeting), Some((100, true)));
+        // Teams の「任意のウィンドウ」規則は、メニューなど通常以外の階層には一致させない。
+        let teams = r.apps.iter().position(|a| a.id == "teams").unwrap();
+        let mut popup = win(3, proc_(2, "MSTeams", None), "", "", 400, 300);
+        assert_eq!(r.score_window(teams, &popup), Some((40, true)));
+        popup.layer = 101;
+        assert_eq!(r.score_window(teams, &popup), None);
+    }
+
+    #[test]
     fn teams_windows() {
         let r = Rules::new(&[]);
         let t = proc_(1, "ms-teams.exe", None);
@@ -526,6 +660,16 @@ pub(crate) mod tests {
             800,
         );
         assert_eq!(r.score_window(1, &main_jp), Some((40, true)));
+        // タブ名の一覧（`TEAMS_TABS`）にあるものは、どれも本体のウィンドウとして扱う。
+        let meet_tab = win(
+            1,
+            t.clone(),
+            "Meet | Microsoft Teams",
+            "TeamsWebView",
+            1200,
+            800,
+        );
+        assert_eq!(r.score_window(1, &meet_tab), Some((40, true)));
         let meeting = win(
             2,
             t.clone(),
@@ -544,6 +688,51 @@ pub(crate) mod tests {
             200,
         );
         assert_eq!(r.score_window(1, &compact), Some((100, true)));
+    }
+
+    #[test]
+    fn teams_mac_meeting_window_is_preferred_over_the_main_window() {
+        let r = Rules::new(&[]);
+        let t = || proc_(1, "MSTeams", Some("com.microsoft.teams2"));
+        // 実機（macOS・日本語）で見えた構成：本体はタブ名、会議は会議名、ほかに無題や URL のウィンドウ。
+        let main = win(1, t(), "ミーティング", "", 1368, 769);
+        let meeting = win(2, t(), "test", "", 1276, 797);
+        let blank = win(3, t(), "", "", 1368, 769);
+        let web = win(4, t(), "teams.microsoft.com/v2/", "", 1368, 769);
+        let prejoin = win(5, t(), "会議への参加 | Microsoft Teams 会議", "", 1280, 800);
+        assert_eq!(r.score_window(1, &main), Some((40, true)));
+        assert_eq!(r.score_window(1, &meeting), Some((80, true)));
+        assert_eq!(r.score_window(1, &blank), Some((40, true)));
+        assert_eq!(r.score_window(1, &web), Some((40, true)));
+        assert_eq!(r.score_window(1, &prejoin), Some((90, true)));
+        // 「チーム定例」のようにタブ名を含むだけの会議名は会議ウィンドウ。
+        let named = win(6, t(), "チーム定例", "", 1276, 797);
+        assert_eq!(r.score_window(1, &named), Some((80, true)));
+
+        // 本体のほうが大きくても、会議ウィンドウを録る。
+        let obs = r.observe(&[], &[main.clone(), meeting.clone(), blank, web]);
+        assert_eq!(obs.best_window(1, 40).unwrap().info.id, 2);
+        // 会議ウィンドウが隠れていても（別のデスクトップ等）、本体へは移らない。
+        let mut hidden = meeting;
+        hidden.minimized = true;
+        let obs = r.observe(&[], &[main, hidden]);
+        assert_eq!(obs.best_window(1, 40).unwrap().info.id, 2);
+
+        // 自分の画面共有中：共有している画面を覆う枠が目印になる（録画対象にはしない）。
+        let mut frame = win(7, t(), "Sharing Indicator", "", 1920, 1080);
+        frame.layer = 2_147_483_631;
+        let mut bar = win(8, t(), "共有コントロール バー", "", 297, 35);
+        bar.layer = 19;
+        let obs = r.observe(&[], &[win(2, t(), "test", "", 1276, 797), frame, bar]);
+        assert_eq!(obs.sharing_window(1).unwrap().info.id, 7);
+        assert_eq!(obs.best_window(1, 40).unwrap().info.id, 2);
+
+        assert_eq!(r.meeting_title(1, "test"), Some("test".into()));
+        assert_eq!(r.meeting_title(1, "ミーティング"), None);
+        assert_eq!(
+            r.meeting_title(1, "会議への参加 | Microsoft Teams 会議"),
+            None
+        );
     }
 
     #[test]

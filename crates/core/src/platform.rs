@@ -40,6 +40,9 @@ pub struct WindowInfo {
     pub width: u32,
     pub height: u32,
     pub minimized: bool,
+    /// ウィンドウの階層。0 = 通常。macOS では常に手前に出るパネル（Zoom の共有中の
+    /// ビデオパネル等）が 0 以外になる。Windows では常に 0。
+    pub layer: i32,
 }
 
 /// ローカル時刻（ファイル名用）。OS 層が提供する。
@@ -97,6 +100,8 @@ pub enum MenuAction {
     RecordNow,
     StopNow,
     OpenFolder,
+    /// 保存先フォルダを選び直す。
+    ChooseFolder,
     SetMode(Mode),
     ToggleAutostart,
     SaveDiagnostics,
@@ -171,7 +176,8 @@ pub struct RecordingSummary {
 pub trait Platform {
     // --- 観測（軽い API のみ。2 秒以上の間隔で呼ばれる） ---
     fn mic_users(&mut self) -> Vec<MicUser>;
-    /// 通常のトップレベルウィンドウ一覧。会議アプリ候補があるときだけ呼ばれる。
+    /// トップレベルウィンドウ一覧（`WindowInfo::layer` が 0 以外のものも含む）。
+    /// 会議アプリ候補があるときだけ呼ばれる。
     fn windows(&mut self) -> Vec<WindowInfo>;
     fn local_time(&self) -> LocalTime;
     /// 単調時計。録画セッションのタイムスタンプと同じ時計であること。
@@ -187,6 +193,8 @@ pub trait Platform {
     fn hide_prompt(&mut self);
     fn notify(&mut self, notice: &Notice);
     fn open_path(&mut self, path: &Path);
+    /// フォルダ選択ダイアログを出す（モーダル）。キャンセルなら None。
+    fn choose_folder(&mut self, current: &Path) -> Option<PathBuf>;
     fn set_autostart(&mut self, enabled: bool) -> Result<(), String>;
     fn autostart_enabled(&self) -> bool;
     fn permissions(&mut self) -> Permissions;
@@ -195,8 +203,13 @@ pub trait Platform {
 
     // --- 録画 ---
     fn start_recording(&mut self, req: &RecordRequest) -> Result<(), String>;
-    /// 録画対象ウィンドウを張り替える（ファイルは継続）。
+    /// 録画対象ウィンドウを張り替える（ファイルは継続）。画面を録っていた場合はそれをやめる。
     fn retarget(&mut self, window: &WindowInfo);
+    /// 映像を、`near` のウィンドウがあるディスプレイ全体に切り替える（自分の画面共有中）。
+    /// 音声の録り方は変えない。対応していない・失敗した場合は false。
+    fn retarget_screen(&mut self, near: &WindowInfo) -> bool;
+    /// 画面の録画をやめる（張り替え先のウィンドウがないとき。映像は止まり、音声は続く）。
+    fn end_screen(&mut self);
     /// 同期的に確定して結果を返す。録画中でなければ None。
     fn stop_recording(&mut self) -> Option<RecordingSummary>;
 

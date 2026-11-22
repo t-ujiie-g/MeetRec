@@ -1,5 +1,9 @@
 //! 通知（UNUserNotificationCenter）。クリックで `Notice.open` のフォルダを開く。
-//! .app バンドル外で実行された場合や未許可の場合は何もしない（ログには残る）。
+//! .app バンドル外で実行された場合や未許可の場合は出せないので、呼び出し側が
+//! アプリ内のパネル（`toast.rs`）で代わりに表示する。
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use block2::RcBlock;
 use meetrec_core::platform::Notice;
@@ -66,6 +70,8 @@ pub struct Notifier {
     center: Option<Retained<UNUserNotificationCenter>>,
     // センターはデリゲートを弱参照するので保持しておく。
     _delegate: Option<Retained<NotifyDelegate>>,
+    /// OS の通知が許可されたか（許可の結果が届くまでは false）。
+    allowed: Arc<AtomicBool>,
     seq: u64,
 }
 
@@ -77,6 +83,7 @@ impl Notifier {
             return Notifier {
                 center: None,
                 _delegate: None,
+                allowed: Arc::default(),
                 seq: 0,
             };
         }
@@ -84,7 +91,10 @@ impl Notifier {
         let delegate: Retained<NotifyDelegate> =
             unsafe { msg_send![NotifyDelegate::alloc(), init] };
         center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        let handler = RcBlock::new(|granted: Bool, error: *mut NSError| {
+        let allowed = Arc::new(AtomicBool::new(false));
+        let flag = allowed.clone();
+        let handler = RcBlock::new(move |granted: Bool, error: *mut NSError| {
+            flag.store(granted.as_bool(), Ordering::Relaxed);
             // SAFETY: error は nil か有効な NSError。
             let err = unsafe { error.as_ref() }.map(|e| e.localizedDescription().to_string());
             meetrec_core::info!(
@@ -100,12 +110,19 @@ impl Notifier {
         Notifier {
             center: Some(center),
             _delegate: Some(delegate),
+            allowed,
             seq: 0,
         }
     }
 
-    pub fn notify(&mut self, notice: &Notice) {
-        let Some(center) = &self.center else { return };
+    /// OS の通知として出す。出せない（未許可・バンドル外）場合は false を返す。
+    pub fn notify(&mut self, notice: &Notice) -> bool {
+        let Some(center) = &self.center else {
+            return false;
+        };
+        if !self.allowed.load(Ordering::Relaxed) {
+            return false;
+        }
         let content = UNMutableNotificationContent::new();
         content.setTitle(&NSString::from_str(&notice.title));
         content.setBody(&NSString::from_str(&notice.body));
@@ -130,5 +147,6 @@ impl Notifier {
             }
         });
         center.addNotificationRequest_withCompletionHandler(&request, Some(&handler));
+        true
     }
 }

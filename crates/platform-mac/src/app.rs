@@ -5,7 +5,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
@@ -13,13 +13,14 @@ use meetrec_core::platform::{
     App, LocalTime, MicUser, Notice, Permissions, Platform, PromptAnswer, PromptModel, RawUsage,
     RecordRequest, RecorderEvent, RecordingSummary, TrayModel, UiEvent, WindowInfo,
 };
+use meetrec_core::text;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy,
-    NSApplicationDelegate, NSApplicationTerminateReply, NSMenuItem, NSWorkspace,
-    NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
+    NSApplicationDelegate, NSApplicationTerminateReply, NSMenuItem, NSModalResponseOK, NSOpenPanel,
+    NSWorkspace, NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
 };
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
@@ -34,6 +35,7 @@ use crate::notify::Notifier;
 use crate::probe::Probe;
 use crate::prompt::Prompt;
 use crate::sys;
+use crate::toast::Toast;
 use crate::tray::{Tray, action_for_tag};
 
 /// メインスレッドで順に処理する項目。
@@ -56,6 +58,14 @@ thread_local! {
     static QUITTING: Cell<bool> = const { Cell::new(false) };
     // ボタンのアクションから（イベント処理中でも）読めるよう、State とは別に持つ。
     static PROMPT: RefCell<Option<Prompt>> = const { RefCell::new(None) };
+    static TOAST: RefCell<Option<Toast>> = const { RefCell::new(None) };
+}
+
+/// アプリ内の通知パネルを閉じ、「フォルダを開く」の対象を返す。
+fn close_toast() -> Option<PathBuf> {
+    let toast = TOAST.with(|t| t.borrow_mut().take())?;
+    toast.close();
+    toast.open
 }
 
 /// 任意のスレッドから：メインキュー経由でイベントを届ける。
@@ -179,6 +189,19 @@ define_class!(
         #[unsafe(method(promptSkip:))]
         fn prompt_skip(&self, _sender: &AnyObject) {
             dispatch(Item::Ui(UiEvent::Prompt(PromptAnswer::Skip)));
+        }
+
+        #[unsafe(method(toastOpen:))]
+        fn toast_open(&self, _sender: &AnyObject) {
+            if let Some(path) = close_toast() {
+                open_path(&path);
+            }
+        }
+
+        // 「閉じる」ボタンと、自動で閉じるタイマーの両方から呼ばれる。
+        #[unsafe(method(toastClose:))]
+        fn toast_close(&self, _sender: &AnyObject) {
+            close_toast();
         }
 
         #[unsafe(method(willSleep:))]
@@ -330,11 +353,38 @@ impl Platform for MacPlatform {
     }
 
     fn notify(&mut self, notice: &Notice) {
-        self.notifier.notify(notice);
+        if self.notifier.notify(notice) {
+            return;
+        }
+        // OS の通知が使えない：アプリ内のパネルで知らせる（古いものは置き換える）。
+        close_toast();
+        let target: &AnyObject = &self.delegate;
+        let below_prompt = PROMPT.with(|p| p.borrow().is_some());
+        let shown = Toast::show(self.mtm, notice, target, below_prompt);
+        TOAST.with(|t| *t.borrow_mut() = Some(shown));
     }
 
     fn open_path(&mut self, path: &Path) {
         open_path(path);
+    }
+
+    fn choose_folder(&mut self, current: &Path) -> Option<PathBuf> {
+        let panel = NSOpenPanel::openPanel(self.mtm);
+        panel.setCanChooseDirectories(true);
+        panel.setCanChooseFiles(false);
+        panel.setAllowsMultipleSelection(false);
+        panel.setCanCreateDirectories(true);
+        panel.setMessage(Some(&NSString::from_str(text::CHOOSE_FOLDER_TITLE)));
+        panel.setDirectoryURL(Some(&NSURL::fileURLWithPath(&NSString::from_str(
+            &current.to_string_lossy(),
+        ))));
+        // 常駐アプリは前面にいないので、前に出してからモーダルで表示する。
+        NSApplication::sharedApplication(self.mtm).activate();
+        if panel.runModal() != NSModalResponseOK {
+            return None;
+        }
+        let path = panel.URL()?.path()?;
+        Some(PathBuf::from(path.to_string()))
     }
 
     fn set_autostart(&mut self, enabled: bool) -> Result<(), String> {
@@ -434,6 +484,18 @@ impl Platform for MacPlatform {
         {
             // 映像も音声も取れない：録画を続けても空になるので中断として知らせる。
             post_recorder(RecorderEvent::Failed("キャプチャを継続できません".into()));
+        }
+    }
+
+    fn retarget_screen(&mut self, near: &WindowInfo) -> bool {
+        self.recorder
+            .as_mut()
+            .is_some_and(|recorder| recorder.show_screen(near))
+    }
+
+    fn end_screen(&mut self) {
+        if let Some(recorder) = self.recorder.as_mut() {
+            recorder.hide_screen();
         }
     }
 

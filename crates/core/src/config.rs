@@ -29,6 +29,9 @@ pub struct VideoConfig {
     pub bitrate_kbps: u32,
     pub keyframe_seconds: u32,
     pub show_cursor: bool,
+    /// 自分が画面共有している間は、会議ウィンドウの代わりに共有している画面を録る。
+    /// false なら参加者のビデオパネルを録る（共有している画面は録らない）。
+    pub record_shared_screen: bool,
 }
 
 impl Default for VideoConfig {
@@ -39,6 +42,7 @@ impl Default for VideoConfig {
             bitrate_kbps: 1500,
             keyframe_seconds: 4,
             show_cursor: true,
+            record_shared_screen: true,
         }
     }
 }
@@ -111,7 +115,8 @@ impl Default for StorageConfig {
 #[serde(default)]
 pub struct Config {
     pub mode: Mode,
-    /// 空なら OS 既定（~/Movies/MeetRec、%USERPROFILE%\Videos\MeetRec）。
+    /// 空なら既定の「ダウンロード」フォルダ（`storage::Dirs::default_output`）。
+    /// メニューの「保存先を変更…」で書き換わる。
     pub output_dir: String,
     /// 初回起動時のログイン項目登録を済ませたか。
     pub autostart_initialized: bool,
@@ -212,6 +217,7 @@ mod tests {
         assert_eq!(cfg, Config::default());
         assert_eq!(cfg.mode, Mode::Ask);
         assert_eq!(cfg.video.fps, 10);
+        assert!(cfg.video.record_shared_screen);
         assert_eq!(cfg.audio.bitrate_kbps, 96);
     }
 

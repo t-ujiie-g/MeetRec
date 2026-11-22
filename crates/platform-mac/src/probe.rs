@@ -198,7 +198,8 @@ impl Probe {
         out
     }
 
-    /// 通常レイヤー（0）のウィンドウ一覧。最小化・別 Space のウィンドウも含む。
+    /// ウィンドウ一覧。最小化・別 Space のウィンドウも、通常以外の階層（常に手前に出る
+    /// パネル等）のウィンドウも含む。どの階層を会議ウィンドウとして扱うかは core の規則が決める。
     /// タイトルは画面収録の権限がないと空になる。
     pub fn windows(&mut self) -> Vec<WindowInfo> {
         let Some(list) = CGWindowListCopyWindowInfo(
@@ -241,9 +242,9 @@ impl Probe {
         let me = sys::own_pid();
         let mut out = Vec::new();
         for d in array.iter() {
-            if number(&d, k_layer) != Some(0.0) {
+            let Some(layer) = number(&d, k_layer) else {
                 continue;
-            }
+            };
             let (Some(id), Some(pid)) = (number(&d, k_num), number(&d, k_pid)) else {
                 continue;
             };
@@ -279,6 +280,7 @@ impl Probe {
                 width,
                 height,
                 minimized: number(&d, k_on).unwrap_or(0.0) == 0.0,
+                layer: layer as i32,
             });
         }
         out

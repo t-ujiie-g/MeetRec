@@ -30,6 +30,7 @@ const ID_OPEN: usize = 3;
 const ID_AUTOSTART: usize = 4;
 const ID_DIAG: usize = 5;
 const ID_QUIT: usize = 6;
+const ID_FOLDER: usize = 7;
 const ID_MODE_ASK: usize = 10;
 const ID_MODE_AUTO: usize = 11;
 const ID_MODE_OFF: usize = 12;
@@ -224,6 +225,7 @@ pub fn show_menu(hwnd: HWND, model: &TrayModel) -> Option<MenuAction> {
             item(menu, MF_STRING, ID_RECORD, text::MENU_RECORD_NOW);
         }
         item(menu, MF_STRING, ID_OPEN, text::MENU_OPEN_FOLDER);
+        item(menu, MF_STRING, ID_FOLDER, text::MENU_CHOOSE_FOLDER);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         for (id, mode) in [
             (ID_MODE_ASK, Mode::Ask),
@@ -268,6 +270,7 @@ pub fn show_menu(hwnd: HWND, model: &TrayModel) -> Option<MenuAction> {
             ID_RECORD => Some(MenuAction::RecordNow),
             ID_STOP => Some(MenuAction::StopNow),
             ID_OPEN => Some(MenuAction::OpenFolder),
+            ID_FOLDER => Some(MenuAction::ChooseFolder),
             ID_AUTOSTART => Some(MenuAction::ToggleAutostart),
             ID_DIAG => Some(MenuAction::SaveDiagnostics),
             ID_QUIT => Some(MenuAction::Quit),

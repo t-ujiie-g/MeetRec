@@ -5,16 +5,13 @@ use meetrec_core::platform::PromptModel;
 use meetrec_core::text;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, MainThreadOnly, sel};
-use objc2_app_kit::{
-    NSBackingStoreType, NSButton, NSControlStateValueOn, NSPanel, NSScreen, NSStatusWindowLevel,
-    NSTextField, NSWindowCollectionBehavior, NSWindowStyleMask,
-};
+use objc2::{MainThreadMarker, sel};
+use objc2_app_kit::{NSButton, NSControlStateValueOn, NSPanel, NSTextField};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
-const WIDTH: f64 = 360.0;
-const HEIGHT: f64 = 118.0;
-const MARGIN: f64 = 16.0;
+use crate::panel::{MARGIN, WIDTH, floating_panel, show_top_right};
+
+pub const HEIGHT: f64 = 118.0;
 
 pub struct Prompt {
     panel: Retained<NSPanel>,
@@ -23,28 +20,7 @@ pub struct Prompt {
 
 impl Prompt {
     pub fn show(mtm: MainThreadMarker, model: &PromptModel, target: &AnyObject) -> Prompt {
-        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WIDTH, HEIGHT));
-        // タイトルバーのみ（閉じるボタンなし）。NonactivatingPanel でフォーカスを奪わない。
-        let style = NSWindowStyleMask::Titled | NSWindowStyleMask::NonactivatingPanel;
-        let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
-            NSPanel::alloc(mtm),
-            rect,
-            style,
-            NSBackingStoreType::Buffered,
-            false,
-        );
-        // SAFETY: Retained で保持するので、close 時の自動解放は無効にする。
-        unsafe { panel.setReleasedWhenClosed(false) };
-        panel.setTitle(&NSString::from_str(text::APP_NAME));
-        panel.setFloatingPanel(true);
-        panel.setBecomesKeyOnlyIfNeeded(true);
-        panel.setHidesOnDeactivate(false);
-        panel.setLevel(NSStatusWindowLevel);
-        panel.setCollectionBehavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::FullScreenAuxiliary
-                | NSWindowCollectionBehavior::Stationary,
-        );
+        let panel = floating_panel(mtm, text::APP_NAME, HEIGHT);
 
         let label = NSTextField::wrappingLabelWithString(&NSString::from_str(&model.message), mtm);
         label.setFrame(NSRect::new(
@@ -95,16 +71,7 @@ impl Prompt {
             content.addSubview(&record);
         }
 
-        // メイン画面の右上隅（メニューバーの下）。
-        if let Some(screen) = NSScreen::mainScreen(mtm) {
-            let visible = screen.visibleFrame();
-            let frame = panel.frame();
-            panel.setFrameOrigin(NSPoint::new(
-                visible.origin.x + visible.size.width - frame.size.width - MARGIN,
-                visible.origin.y + visible.size.height - frame.size.height - MARGIN,
-            ));
-        }
-        panel.orderFrontRegardless();
+        show_top_right(&panel, mtm, 0.0);
         Prompt { panel, always }
     }
 

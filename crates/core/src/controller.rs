@@ -13,7 +13,7 @@ use crate::platform::{
     App, MenuAction, NS_PER_SEC as NS, Notice, Permissions, Pid, Platform, PromptAnswer,
     PromptModel, RecordRequest, RecorderEvent, TrayModel, UiEvent,
 };
-use crate::rules::{Observation, Rules};
+use crate::rules::{Observation, Rules, ScoredWindow};
 use crate::storage::{self, Dirs, RecoveryOutcome};
 use crate::text;
 
@@ -38,6 +38,45 @@ enum Decision {
     ResumeAfterWake,
 }
 
+/// 会議アプリのウィンドウ構成を 1 行にまとめる（ログ用）。
+fn window_summary(obs: &Observation, app: usize) -> String {
+    let mut parts: Vec<String> = obs
+        .windows
+        .iter()
+        .filter(|w| w.app == app)
+        .map(|w| {
+            format!(
+                "[id={} {:?} {}x{} 階層={} 表示={} {}点 対象={}]",
+                w.info.id,
+                w.info.title,
+                w.info.width,
+                w.info.height,
+                w.info.layer,
+                !w.info.minimized,
+                w.score,
+                w.capture
+            )
+        })
+        .collect();
+    parts.extend(
+        obs.unmatched
+            .iter()
+            .filter(|(a, _)| *a == app)
+            .map(|(_, w)| {
+                format!(
+                    "[id={} {:?} {}x{} 階層={} 規則なし]",
+                    w.id, w.title, w.width, w.height, w.layer
+                )
+            }),
+    );
+    parts.sort();
+    if parts.is_empty() {
+        "なし".into()
+    } else {
+        parts.join(" ")
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Meeting {
     app: usize,
@@ -53,9 +92,125 @@ struct Rec {
     started_ns: u64,
     path: PathBuf,
     target: Option<u64>,
+    /// 録画対象が、会議ウィンドウと言い切れるウィンドウ（`ScoredWindow::definite`）か。
+    target_definite: bool,
     candidate: Option<(u64, u64)>,
     gone_since: Option<u64>,
     audio_only_notified: bool,
+    /// 自分の画面共有中で、共有している画面を録っている。
+    screen: bool,
+    /// 画面への切り替えに失敗した（この録画では再試行せず、ウィンドウの録画を続ける）。
+    screen_failed: bool,
+    /// 直前に記録した会議アプリのウィンドウ構成（変わったときだけログに出す）。
+    last_windows: String,
+}
+
+impl Rec {
+    /// 張り替えの判断を後から追えるよう、会議アプリのウィンドウ構成が変わったら記録する
+    /// （会議アプリ以外のウィンドウは `obs` に入らない）。
+    fn log_windows(&mut self, obs: &Observation) {
+        let summary = window_summary(obs, self.app);
+        if summary != self.last_windows {
+            crate::info!("録画中のウィンドウ: {summary}");
+            self.last_windows = summary;
+        }
+    }
+
+    /// 録画対象を `w` に張り替える。
+    fn retarget(&mut self, p: &mut dyn Platform, w: &ScoredWindow) {
+        p.retarget(&w.info);
+        self.target = Some(w.info.id);
+        self.target_definite = w.definite;
+        self.candidate = None;
+    }
+
+    /// 自分が画面共有している間は、共有している画面を録る（D31）。
+    /// 戻り値：画面を録っている間 true。
+    fn follow_share(
+        &mut self,
+        p: &mut dyn Platform,
+        obs: &Observation,
+        best: Option<&ScoredWindow>,
+        enabled: bool,
+    ) -> bool {
+        let sharing = obs
+            .sharing_window(self.app)
+            .filter(|_| enabled && !self.screen_failed);
+        match sharing {
+            Some(mark) if !self.screen => {
+                if p.retarget_screen(&mark.info) {
+                    crate::info!("画面共有を検出：共有中の画面の録画に切り替え");
+                    self.screen = true;
+                    self.candidate = None;
+                } else {
+                    self.screen_failed = true;
+                }
+            }
+            None if self.screen => {
+                // 共有が終わった：すぐに画面の録画をやめる（共有していない画面を録らない）。
+                self.screen = false;
+                match best {
+                    Some(b) => {
+                        crate::info!("画面共有の終了：{:?} の録画に戻す", b.info.title);
+                        self.retarget(p, b);
+                    }
+                    None => {
+                        crate::info!("画面共有の終了：戻る先のウィンドウなし");
+                        p.end_screen();
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.screen
+    }
+
+    /// 録画対象ウィンドウが消えた・より良いウィンドウが現れたときに張り替える。
+    fn follow_windows(
+        &mut self,
+        p: &mut dyn Platform,
+        obs: &Observation,
+        best: Option<&ScoredWindow>,
+        now: u64,
+    ) {
+        let current = self.target.and_then(|id| {
+            obs.windows
+                .iter()
+                .find(|w| w.app == self.app && w.info.id == id)
+        });
+        match (current, best) {
+            // 会議ウィンドウが消え、残りは会議ウィンドウと言い切れないもの（Teams の本体など）だけ：
+            // 会議が終わった直後の可能性が高いので移らない（映像は止まり、音声は続く）。
+            (None, Some(b)) if self.target_definite && !b.definite => self.candidate = None,
+            // 対象が消えた：すぐ張り替える。
+            (None, Some(b)) if self.target.is_some() => {
+                crate::info!(
+                    "録画対象ウィンドウが消えたため張り替え: {:?} ({}点)",
+                    b.info.title,
+                    b.score
+                );
+                self.retarget(p, b);
+            }
+            // より点数の高いウィンドウが安定して存在する：張り替える。
+            (Some(c), Some(b))
+                if b.info.id != c.info.id
+                    && (b.score > c.score
+                        || !c.capture
+                        || (c.info.minimized && !b.info.minimized)) =>
+            {
+                match self.candidate {
+                    Some((id, since)) if id == b.info.id => {
+                        if now.saturating_sub(since) >= RETARGET_HOLD_NS {
+                            crate::info!("録画対象を張り替え: {:?} ({}点)", b.info.title, b.score);
+                            self.retarget(p, b);
+                        }
+                    }
+                    _ => self.candidate = Some((b.info.id, now)),
+                }
+            }
+            _ => self.candidate = None,
+        }
+    }
 }
 
 pub struct Controller {
@@ -323,45 +478,12 @@ impl Controller {
     /// 録画中：ウィンドウ追従・手動録画の自動停止・ディスク残量。
     fn follow(&mut self, p: &mut dyn Platform, obs: &Observation, now: u64) {
         let Some(rec) = self.rec.as_mut() else { return };
+        rec.log_windows(obs);
         let keep = self.rules.apps[rec.app].keep_score;
         let best = obs.best_window(rec.app, keep);
-        let current = rec.target.and_then(|id| {
-            obs.windows
-                .iter()
-                .find(|w| w.app == rec.app && w.info.id == id)
-        });
-        match (current, best) {
-            // 対象が消えた：すぐ張り替える。
-            (None, Some(b)) if rec.target.is_some() => {
-                crate::info!(
-                    "録画対象ウィンドウが消えたため張り替え: {:?} ({}点)",
-                    b.info.title,
-                    b.score
-                );
-                p.retarget(&b.info);
-                rec.target = Some(b.info.id);
-                rec.candidate = None;
-            }
-            // より点数の高いウィンドウが安定して存在する：張り替える。
-            (Some(c), Some(b))
-                if b.info.id != c.info.id
-                    && (b.score > c.score
-                        || !c.capture
-                        || (c.info.minimized && !b.info.minimized)) =>
-            {
-                match rec.candidate {
-                    Some((id, since)) if id == b.info.id => {
-                        if now.saturating_sub(since) >= RETARGET_HOLD_NS {
-                            crate::info!("録画対象を張り替え: {:?} ({}点)", b.info.title, b.score);
-                            p.retarget(&b.info);
-                            rec.target = Some(b.info.id);
-                            rec.candidate = None;
-                        }
-                    }
-                    _ => rec.candidate = Some((b.info.id, now)),
-                }
-            }
-            _ => rec.candidate = None,
+        // 画面を録っている間はウィンドウを追わない。
+        if !rec.follow_share(p, obs, best, self.cfg.video.record_shared_screen) {
+            rec.follow_windows(p, obs, best, now);
         }
 
         let mut stop_reason = None;
@@ -475,9 +597,9 @@ impl Controller {
             return false;
         }
         let rule = &self.rules.apps[app];
-        let window = obs
-            .best_window(app, rule.keep_score)
-            .map(|w| w.info.clone());
+        let best = obs.best_window(app, rule.keep_score);
+        let target_definite = best.is_some_and(|w| w.definite);
+        let window = best.map(|w| w.info.clone());
         let title = window
             .as_ref()
             .and_then(|w| self.rules.meeting_title(app, &w.title));
@@ -508,9 +630,13 @@ impl Controller {
                     started_ns: p.now_ns(),
                     path,
                     target: window.map(|w| w.id),
+                    target_definite,
                     candidate: None,
                     gone_since: None,
                     audio_only_notified: false,
+                    screen: false,
+                    screen_failed: false,
+                    last_windows: String::new(),
                 });
                 true
             }
@@ -647,6 +773,7 @@ impl Controller {
                 let _ = fs::create_dir_all(&dir);
                 p.open_path(&dir);
             }
+            MenuAction::ChooseFolder => self.choose_folder(p),
             MenuAction::SetMode(mode) => self.set_mode(p, mode),
             MenuAction::ToggleAutostart => {
                 let want = !p.autostart_enabled();
@@ -663,6 +790,27 @@ impl Controller {
                 p.quit();
             }
         }
+    }
+
+    /// 保存先を選び直す。録画中のファイルは動かさず、次の録画から新しい保存先を使う。
+    fn choose_folder(&mut self, p: &mut dyn Platform) {
+        let Some(dir) = p.choose_folder(&self.output_dir()) else {
+            return;
+        };
+        if let Err(e) = fs::create_dir_all(&dir) {
+            crate::warn!("保存先を使えません: {} ({e})", dir.display());
+            self.notify(p, text::NOTICE_FOLDER_UNUSABLE, None);
+            return;
+        }
+        crate::info!("保存先を変更: {}", dir.display());
+        // 既定の保存先に戻したときは空にして、既定に追従させる。
+        self.cfg.output_dir = if dir == self.dirs.default_output {
+            String::new()
+        } else {
+            dir.to_string_lossy().into_owned()
+        };
+        self.save_config();
+        self.notify(p, text::NOTICE_FOLDER_CHANGED, Some(dir));
     }
 
     fn recorder_event(&mut self, p: &mut dyn Platform, ev: RecorderEvent) {
@@ -765,7 +913,7 @@ impl Controller {
                     let score = self.rules.score_window(a, w);
                     let _ = writeln!(
                         s,
-                        "[{}] id={} pid={} proc={:?} bundle={:?} class={:?} title={:?} {}x{} min={} => {}",
+                        "[{}] id={} pid={} proc={:?} bundle={:?} class={:?} title={:?} {}x{} layer={} min={} => {}",
                         self.rules.apps[a].id,
                         w.id,
                         w.owner.pid,
@@ -775,6 +923,7 @@ impl Controller {
                         w.title,
                         w.width,
                         w.height,
+                        w.layer,
                         w.minimized,
                         score.map_or("一致なし".into(), |(sc, cap)| format!(
                             "{sc}点 capture={cap}"
@@ -899,6 +1048,8 @@ mod tests {
         fail_start: bool,
         recording: Option<RecordRequest>,
         calls: Vec<String>,
+        chosen: Option<PathBuf>,
+        screen_ok: bool,
         notices: Vec<Notice>,
         tray: Vec<TrayModel>,
     }
@@ -951,6 +1102,9 @@ mod tests {
         fn open_path(&mut self, path: &Path) {
             self.calls.push(format!("open {}", path.display()));
         }
+        fn choose_folder(&mut self, _: &Path) -> Option<PathBuf> {
+            self.chosen.clone()
+        }
         fn set_autostart(&mut self, enabled: bool) -> Result<(), String> {
             self.autostart = enabled;
             Ok(())
@@ -980,6 +1134,13 @@ mod tests {
         }
         fn retarget(&mut self, window: &WindowInfo) {
             self.calls.push(format!("retarget {}", window.id));
+        }
+        fn retarget_screen(&mut self, near: &WindowInfo) -> bool {
+            self.calls.push(format!("screen {}", near.id));
+            self.screen_ok
+        }
+        fn end_screen(&mut self) {
+            self.calls.push("end_screen".into());
         }
         fn stop_recording(&mut self) -> Option<RecordingSummary> {
             let req = self.recording.take()?;
@@ -1052,6 +1213,20 @@ mod tests {
             for _ in 0..n {
                 self.tick();
             }
+        }
+        /// macOS の Teams で会議に入って録画が始まった状態にする（実機で見えたウィンドウ構成）。
+        /// 戻り値は（本体のウィンドウ, 会議ウィンドウ）。
+        fn join_teams_mac(&mut self) -> (WindowInfo, WindowInfo) {
+            let teams = || proc_(9, "MSTeams", Some("com.microsoft.teams2"));
+            let main = win(1, teams(), "ミーティング", "", 1368, 769);
+            let meeting = win(2, teams(), "test", "", 1277, 798);
+            self.p.mic = vec![MicUser {
+                chain: vec![teams()],
+            }];
+            self.p.windows = vec![main.clone(), meeting.clone()];
+            self.ticks(3);
+            assert!(self.c.is_recording());
+            (main, meeting)
         }
         fn join(&mut self) {
             self.p.mic = vec![MicUser {
@@ -1239,6 +1414,116 @@ mod tests {
         // ウィンドウが全部消えたら猶予後に止まる。
         h.p.windows.clear();
         h.ticks(5);
+        assert!(!h.c.is_recording());
+    }
+
+    #[test]
+    fn choosing_a_folder_changes_where_recordings_go() {
+        let mut h = H::new("ctl-folder", Mode::Auto);
+        // キャンセル：何も変わらない。
+        h.ev(UiEvent::Menu(MenuAction::ChooseFolder));
+        assert_eq!(h.c.cfg.output_dir, "");
+        let picked = h.dirs.state.join("picked");
+        h.p.chosen = Some(picked.clone());
+        h.ev(UiEvent::Menu(MenuAction::ChooseFolder));
+        assert_eq!(h.c.output_dir(), picked);
+        assert!(picked.is_dir());
+        let (saved, _) = Config::load(&h.dirs.config_file());
+        assert_eq!(saved.output_dir, picked.to_string_lossy());
+        assert_eq!(h.p.notices.last().unwrap().open.as_deref(), Some(&*picked));
+        h.join();
+        h.ticks(3);
+        assert_eq!(
+            h.p.recording.as_ref().unwrap().path.parent(),
+            Some(&*picked)
+        );
+        // 既定の保存先を選び直すと、設定は空（既定に追従）に戻る。
+        h.p.chosen = Some(h.dirs.default_output.clone());
+        h.ev(UiEvent::Menu(MenuAction::ChooseFolder));
+        assert_eq!(h.c.cfg.output_dir, "");
+    }
+
+    #[test]
+    fn hidden_floating_panel_left_after_the_meeting_does_not_keep_recording() {
+        let mut h = H::new("ctl-leftover-panel", Mode::Auto);
+        h.join();
+        h.ticks(3);
+        assert!(h.c.is_recording());
+        // 退出：会議ウィンドウは消え、マイクも解放されるが、隠れたビデオパネルだけが残る（macOS の Zoom）。
+        let mut panel = win(6, zoom(), "zoom floating video window", "", 244, 139);
+        panel.layer = 26;
+        panel.minimized = true;
+        h.p.windows = vec![panel];
+        h.p.mic.clear();
+        h.ticks(10);
+        assert!(!h.c.is_recording());
+        assert_eq!(h.count("retarget"), 0);
+    }
+
+    #[test]
+    fn own_screen_share_records_the_screen_and_returns_to_the_meeting() {
+        let mut h = H::new("ctl-share-screen", Mode::Auto);
+        h.p.screen_ok = true;
+        h.join();
+        h.ticks(3);
+        // 共有開始：会議ウィンドウは隠れ、ビデオパネルとツールバーが出る。
+        let mut hidden = meeting_win();
+        hidden.minimized = true;
+        let float = win(5, zoom(), "", "ZPFloatVideoWndClass", 240, 135);
+        let toolbar = win(4, zoom(), "", "ZPToolBarParentWndClass", 600, 60);
+        h.p.windows = vec![hidden, float.clone(), toolbar];
+        h.ticks(5);
+        assert_eq!(h.count("screen 4"), 1);
+        // 画面を録っている間はビデオパネルへ張り替えない。
+        assert_eq!(h.count("retarget"), 0);
+        // 共有終了：すぐ会議ウィンドウへ戻す。
+        h.p.windows = vec![meeting_win(), float];
+        h.tick();
+        assert_eq!(h.count("retarget 1"), 1);
+        assert_eq!(h.count("end_screen"), 0);
+        assert!(h.c.is_recording());
+    }
+
+    #[test]
+    fn leaving_while_sharing_stops_recording_the_screen_at_once() {
+        let mut h = H::new("ctl-share-leave", Mode::Auto);
+        h.p.screen_ok = true;
+        h.join();
+        h.ticks(3);
+        let toolbar = win(4, zoom(), "", "ZPToolBarParentWndClass", 600, 60);
+        h.p.windows = vec![toolbar];
+        h.tick();
+        assert_eq!(h.count("screen 4"), 1);
+        // 共有したまま退出：ウィンドウがすべて消える。会議の終了判定を待たずに画面の録画をやめる。
+        h.p.windows.clear();
+        h.tick();
+        assert_eq!(h.count("end_screen"), 1);
+    }
+
+    #[test]
+    fn does_not_move_from_a_closed_meeting_window_to_the_app_main_window() {
+        let mut h = H::new("ctl-teams-main", Mode::Auto);
+        let (main, _) = h.join_teams_mac();
+        assert_eq!(
+            h.p.recording.as_ref().unwrap().window.as_ref().unwrap().id,
+            2
+        );
+        // 退出：会議ウィンドウが閉じ、本体だけが残る。本体の録画には移らない。
+        h.p.windows = vec![main];
+        h.ticks(2);
+        assert_eq!(h.count("retarget"), 0);
+    }
+
+    #[test]
+    fn hidden_teams_meeting_window_left_after_leaving_does_not_keep_recording() {
+        let mut h = H::new("ctl-teams-leftover", Mode::Auto);
+        let (main, meeting) = h.join_teams_mac();
+        // 退出：マイクは解放されるが、会議ウィンドウは隠れたまま残る（macOS の Teams で実機確認）。
+        let mut hidden = meeting;
+        hidden.minimized = true;
+        h.p.windows = vec![main, hidden];
+        h.p.mic.clear();
+        h.ticks(10);
         assert!(!h.c.is_recording());
     }
 

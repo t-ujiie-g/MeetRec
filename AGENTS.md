@@ -60,6 +60,9 @@ docs                   実機確認の手順、署名・公証の手順
 - **外から来る値を信用しない。** 設定ファイル、ウィンドウタイトル（ファイル名にするときは `storage::sanitize_component` を通す）、
   進行中マーカーの中身、修復対象の MP4、他プロセスからも送れるウィンドウメッセージ（D25〜D27）。
 - **ログ・診断ログに、会議アプリ以外のウィンドウタイトルを出さない**（D13）。
+- **実機で分かった会議アプリの挙動は、テストにして残す。** ウィンドウの名前・階層・退出後に残るウィンドウなどは
+  `rules.rs` / `controller.rs` のテストに「実機で確認」と書いて固定する（D30〜D32）。録画が止まらない・別の画面を録る、
+  といった不具合はここから起きる。
 - **実機で確かめていない仮定を断定でコードに埋め込まない。** `core::rules` の定数表（`config.toml` で上書きできる）に置き、
   PROGRESS.md の「未検証事項」に載せる。確かめられたら一覧から消す。
 - `Platform` のメソッドと `App::on_event` はメインスレッドで呼ぶ。OS 層のイベントはキューで直列化し、再入させない（D24）。
@@ -81,12 +84,13 @@ docs                   実機確認の手順、署名・公証の手順
 - 定数の置き場所:
   - 両 OS で揃える値は core に置く。時間の単位（`NS_PER_SEC`）は `platform.rs`、音声の形式（`OUT_RATE`・`FRAME`・`FRAME_LEN`・`DEFAULT_ASC`）は
     `audio.rs`、エンコードの制限（`SOFTWARE_MAX_LONG_SIDE`・`VIDEO_TIMESCALE`）は `session.rs` / `mp4.rs`、UI 文言は `text.rs`、
-    会議アプリの定数表は `rules.rs`、目標値（メモリ・CPU）は `metrics.rs`。
+    会議アプリの定数表（Teams のタブ名 `TEAMS_TABS` を含む）は `rules.rs`、目標値（メモリ・CPU）は `metrics.rs`。
   - 設定の既定値と範囲は `config.rs` が正。README の設定例はこれに揃える。
   - 1 ファイルの中でしか使わない閾値・待ち時間は、そのファイルの先頭の `const` にする。
 - 意図的な重複:
   - `platform-mac` と `platform-win` は同じ役割のファイル（`app` / `tray` / `prompt` / `probe` / `capture` / `aac` / `sys`）を別々に持つ。
     OS の API が違うので共通化しない（共通にできるのは core に置ける「判断」だけ）。
+    片方にしか無いもの：mac の `toast`（OS の通知が使えないときの代わり。D29）と `panel`（`prompt` と `toast` の共通部分）。
   - トレイのメニュー ID（mac の `TAG_*`、win の `ID_*`）は各 OS の中で閉じた値で、揃える必要はない。
   - `windows` と `windows-core` は同じ系列の版に揃える（`#[implement]` マクロのため）。`windows-core` だけを上げない。
   - ソフトウェアエンコードに落ちたときの fps の下げ方は OS で違う（mac は半分で下限 5、win は上限 5）。
