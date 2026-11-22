@@ -66,43 +66,14 @@ impl Probe {
 
     /// 入力（`eCapture`）または出力（`eRender`）の機器を使っているオーディオセッションの一覧。
     fn sessions(&mut self, flow: EDataFlow) -> Vec<CaptureSession> {
-        let mut out = Vec::new();
         let Some(en) = self.enumerator() else {
-            return out;
+            return Vec::new();
         };
-        unsafe {
-            let Ok(devices) = en.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE) else {
-                // 列挙子が無効になった可能性があるので作り直す。
-                self.enumerator = None;
-                return out;
-            };
-            for i in 0..devices.GetCount().unwrap_or(0) {
-                let Ok(device) = devices.Item(i) else {
-                    continue;
-                };
-                // セッション一覧を最新にするため、マネージャは毎回取り直す。
-                let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else {
-                    continue;
-                };
-                let Ok(sessions) = manager.GetSessionEnumerator() else {
-                    continue;
-                };
-                for n in 0..sessions.GetCount().unwrap_or(0) {
-                    let Ok(control) = sessions.GetSession(n) else {
-                        continue;
-                    };
-                    let Ok(control2) = control.cast::<IAudioSessionControl2>() else {
-                        continue;
-                    };
-                    let pid = control2.GetProcessId().unwrap_or(0);
-                    let active = control
-                        .GetState()
-                        .is_ok_and(|s| s == AudioSessionStateActive);
-                    out.push(CaptureSession { pid, active });
-                }
-            }
-        }
-        out
+        enum_sessions(&en, flow).unwrap_or_else(|| {
+            // 列挙子が無効になった可能性があるので作り直す。
+            self.enumerator = None;
+            Vec::new()
+        })
     }
 
     /// マイク（キャプチャエンドポイント）でストリームが動いているプロセス。
@@ -275,6 +246,61 @@ impl Probe {
 }
 
 /// 本人 → 親 → 祖父…のチェーン。
+/// 機器（入力または出力）を使っているオーディオセッションを列挙する。列挙できなければ None。
+fn enum_sessions(en: &IMMDeviceEnumerator, flow: EDataFlow) -> Option<Vec<CaptureSession>> {
+    let mut out = Vec::new();
+    // SAFETY: COM は呼び出し側のスレッドで初期化済み。取得したインターフェースをその場で使うだけ。
+    unsafe {
+        let devices = en.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE).ok()?;
+        for i in 0..devices.GetCount().unwrap_or(0) {
+            let Ok(device) = devices.Item(i) else {
+                continue;
+            };
+            // セッション一覧を最新にするため、マネージャは毎回取り直す。
+            let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else {
+                continue;
+            };
+            let Ok(sessions) = manager.GetSessionEnumerator() else {
+                continue;
+            };
+            for n in 0..sessions.GetCount().unwrap_or(0) {
+                let Ok(control) = sessions.GetSession(n) else {
+                    continue;
+                };
+                let Ok(control2) = control.cast::<IAudioSessionControl2>() else {
+                    continue;
+                };
+                let pid = control2.GetProcessId().unwrap_or(0);
+                let active = control
+                    .GetState()
+                    .is_ok_and(|s| s == AudioSessionStateActive);
+                out.push(CaptureSession { pid, active });
+            }
+        }
+    }
+    Some(out)
+}
+
+/// いま音を出している（出力のセッションが動作中の）プロセスのうち、`root` の子孫であるもの。
+/// 録音スレッドから呼ぶ（COM 初期化済みであること）。
+pub fn rendering_descendants(root: u32) -> Vec<u32> {
+    // SAFETY: COM は呼び出し側のスレッドで初期化済み。
+    let Some(sessions) = unsafe {
+        CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()
+    }
+    .and_then(|en| enum_sessions(&en, eRender)) else {
+        return Vec::new();
+    };
+    let procs = sys::snapshot_processes();
+    let mut out: Vec<u32> = Vec::new();
+    for s in sessions.iter().filter(|s| s.active && s.pid != root) {
+        if !out.contains(&s.pid) && chain_of(&procs, s.pid).iter().any(|p| p.pid == root) {
+            out.push(s.pid);
+        }
+    }
+    out
+}
+
 pub fn chain_of(procs: &[ProcEntry], pid: u32) -> Vec<ProcInfo> {
     let mut chain = Vec::new();
     let mut cur = pid;
