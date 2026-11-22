@@ -552,12 +552,15 @@ impl Platform for WinPlatform {
         }
     }
 
-    fn retarget_screen(&mut self, _near: &WindowInfo) -> bool {
-        // 未対応（モニター全体のキャプチャは未実装）。core は参加者のビデオパネルの録画を続ける。
-        false
+    fn retarget_screen(&mut self, near: &WindowInfo) -> bool {
+        self.recorder.as_ref().is_some_and(|r| r.show_screen(near))
     }
 
-    fn end_screen(&mut self) {}
+    fn end_screen(&mut self) {
+        if let Some(r) = &self.recorder {
+            r.hide_screen();
+        }
+    }
 
     fn stop_recording(&mut self) -> Option<RecordingSummary> {
         self.recorder.take().map(|r| r.stop())
