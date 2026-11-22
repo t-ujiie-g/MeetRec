@@ -3,7 +3,7 @@
 新しいセッションはこのファイルと DECISIONS.md を読めば再開できる。
 
 ## 現在地
-- ブランチ：`claude/relaxed-allen-gw2kq3`
+- ブランチ：`main`（作業は `refactor/` などの作業ブランチで行い、PR で取り込む）
 - M0〜M7 のコードと文書は一通り実装済み。**macOS / Windows の実機では一度も動かしていない**
   （開発環境が Linux コンテナのため）。確認できているのは「Linux 上のユニットテスト」「両 OS 向けの型検査・clippy」
   「CI（実機ランナー）でのビルド・リンク・core テスト」まで。
@@ -32,7 +32,7 @@
 - コミット `f768eb8`（2026-11-20）で 3 ジョブ（core / macos-latest / windows-latest）とも緑。
   成果物 `MeetRec-macos`（.app の zip、圧縮後 約 0.75MB）と `MeetRec-windows`（MeetRec.exe、圧縮後 約 0.3MB）が
   ダウンロードできる。バイナリサイズは目標（20MB）を大きく下回る。
-- CI は Rust 1.97.0 に固定（`rust-toolchain.toml`）。新しい clippy の指摘で CI だけ赤になるのを防ぐため。
+- CI は Rust 1.100.0 に固定（`rust-toolchain.toml`）。新しい clippy の指摘で CI だけ赤になるのを防ぐため。
 - 緑が示すのは「ビルド・リンクできる」「core のテストが両 OS で通る」ことまで。起動・録画の動作は示さない。
 
 ## 次にやること

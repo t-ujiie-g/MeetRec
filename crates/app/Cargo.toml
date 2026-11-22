@@ -3,6 +3,7 @@ name = "meetrec"
 description = "超軽量 Web 会議自動録画アプリ"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
