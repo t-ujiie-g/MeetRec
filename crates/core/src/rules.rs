@@ -284,6 +284,14 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     sharing: true,
                     ..Default::default()
                 },
+                // Windows：自分が画面共有している間、共有している画面を囲む枠（タイトルは空。実機のログで確認）。
+                WindowRule {
+                    score: 40,
+                    capture: false,
+                    class_any: s(&["ScreenBorderWindow"]),
+                    sharing: true,
+                    ..Default::default()
+                },
                 // フォールバック：Teams の任意のウィンドウ。
                 WindowRule {
                     score: 40,
@@ -810,6 +818,31 @@ pub(crate) mod tests {
         let obs = r.observe(&[], &[win(2, t(), "test", "", 1276, 797), frame, bar]);
         assert_eq!(obs.sharing_window(1).unwrap().info.id, 7);
         assert_eq!(obs.best_window(1, 40).unwrap().info.id, 2);
+
+        // Windows（実機のログで確認）：共有中は、タイトルが空の枠のウィンドウと「会議のコンパクト ビュー」が出て、
+        // 会議ウィンドウは隠れる。枠が目印になり、録画対象にはならない。
+        let w = || proc_(3, "ms-teams.exe", None);
+        let mut hidden = win(
+            10,
+            w(),
+            "test | Microsoft Teams",
+            "TeamsWebView",
+            1920,
+            1015,
+        );
+        hidden.minimized = true;
+        let border = win(11, w(), "", "ScreenBorderWindow", 1920, 1008);
+        let compact = win(
+            12,
+            w(),
+            "会議のコンパクト ビュー | test | Microsoft Teams",
+            "TeamsWebView",
+            286,
+            459,
+        );
+        let obs = r.observe(&[], &[hidden, border.clone(), compact]);
+        assert_eq!(obs.sharing_window(1).unwrap().info.id, 11);
+        assert_eq!(r.score_window(1, &border), Some((40, false)));
 
         assert_eq!(r.meeting_title(1, "test"), Some("test".into()));
         assert_eq!(r.meeting_title(1, "ミーティング"), None);
