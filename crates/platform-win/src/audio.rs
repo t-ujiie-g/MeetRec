@@ -1,7 +1,6 @@
 //! WASAPI キャプチャ：会議アプリのプロセスループバック（相手音声）とマイク。
 //! どちらもイベント駆動の専用スレッドで動き、PCM を float に直してミキサへ渡す。
 
-use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -18,7 +17,7 @@ use windows::Win32::Media::Audio::{
     IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient, IMMDevice,
     IMMDeviceEnumerator, MMDeviceEnumerator, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
     VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eCapture,
-    eCommunications, eConsole,
+    eCommunications, eConsole, eRender,
 };
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree};
@@ -37,12 +36,6 @@ const SUBTYPE_FLOAT_DATA1: u32 = 3;
 const BUFFERFLAGS_SILENT: u32 = 2;
 const BUFFERFLAGS_TIMESTAMP_ERROR: u32 = 4;
 const VT_BLOB: u16 = 65;
-/// 相手音声が無音のままのとき、対象の切り替えを検討するまでの時間。
-const SILENT_BEFORE_RETARGET_NS: u64 = 3 * NS_PER_SEC;
-/// 音を出しているはずのプロセスを直接録っても無音のとき、別の候補に移るまでの時間。
-const SILENT_BEFORE_ROTATE_NS: u64 = 15 * NS_PER_SEC;
-/// 対象の切り替えを検討する間隔。
-const RETARGET_CHECK_NS: u64 = 2 * NS_PER_SEC;
 /// 共有モードのバッファ長（100ns 単位）。
 const BUFFER_HNS: i64 = 2_000_000;
 
@@ -125,14 +118,12 @@ impl Format {
 }
 
 /// 開始済みのクライアントからパケットを読み続ける。`keep_going` が false を返したら抜ける。
-/// `sounded`：無音でないデータを最後に受け取った時刻（QPC、ns）を書き込む先。
 unsafe fn capture_loop(
     client: &IAudioClient,
     format: Format,
     source: usize,
     holder: &Holder,
     stop: &AtomicBool,
-    sounded: &Cell<u64>,
     mut keep_going: impl FnMut() -> bool,
 ) -> WinResult<()> {
     unsafe {
@@ -159,9 +150,6 @@ unsafe fn capture_loop(
                             frames as usize * format.frame_bytes(),
                         );
                         format.to_f32(bytes, &mut pcm);
-                        if pcm.iter().any(|v| *v != 0.0) {
-                            sounded.set(sys::qpc_ns());
-                        }
                         if !heard {
                             heard = true;
                             meetrec_core::info!(
@@ -273,105 +261,115 @@ unsafe fn activate_loopback(pid: u32, stop: &AtomicBool) -> WinResult<IAudioClie
     }
 }
 
-/// 無音が続いているときに、次に試す対象を決める。候補は、音を出している子孫のプロセス。
-/// 今の対象が候補に入っていれば（＝音を出しているはずのプロセスを直接録っている）、`rotate` のときだけ
-/// 次の候補へ移る。入っていなければ最初の候補へ、候補がなければルートへ戻す。変える必要がなければ None。
-fn next_target(root: u32, current: u32, rotate: bool) -> Option<u32> {
-    let candidates = probe::rendering_descendants(root);
-    match candidates.iter().position(|p| *p == current) {
-        Some(i) if rotate && candidates.len() > 1 => Some(candidates[(i + 1) % candidates.len()]),
-        Some(_) => None,
-        None => candidates
-            .first()
-            .copied()
-            .or((current != root).then_some(root)),
+/// 会議アプリ（子プロセスを含むツリー）が出す音だけを録る。Windows 10 2004 以降。
+unsafe fn process_loopback_once(pid: u32, holder: &Holder, stop: &AtomicBool) -> WinResult<()> {
+    unsafe {
+        // プロセスループバックはミックスフォーマットを問い合わせられないので自分で指定する。
+        let format = Format {
+            rate: 48_000,
+            channels: 2,
+            bits: 16,
+            float: false,
+        };
+        let wave = WAVEFORMATEX {
+            wFormatTag: WAVE_FORMAT_PCM,
+            nChannels: format.channels,
+            nSamplesPerSec: format.rate,
+            nAvgBytesPerSec: format.rate * format.frame_bytes() as u32,
+            nBlockAlign: format.frame_bytes() as u16,
+            wBitsPerSample: format.bits,
+            cbSize: 0,
+        };
+        let client = activate_loopback(pid, stop)?;
+        client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_LOOPBACK
+                | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+            BUFFER_HNS,
+            0,
+            &wave,
+            None,
+        )?;
+        meetrec_core::info!("相手音声のキャプチャ開始（プロセスループバック pid={pid}）");
+        capture_loop(&client, format, SRC_APP, holder, stop, || true)
     }
 }
 
-/// 会議アプリ（子プロセスを含むツリー）が出す音だけを録る。Windows 10 2004 以降。
-pub fn run_loopback(holder: Arc<Holder>, stop: Arc<AtomicBool>, pid: u32) {
+/// PC から出る音すべて（会議アプリが音を出している出力機器のループバック）を録る。
+/// プロセスループバックで録れないアプリ用（D36）。出力機器が変わったら Ok で戻る（開き直す）。
+unsafe fn system_loopback_once(root: u32, holder: &Holder, stop: &AtomicBool) -> WinResult<()> {
+    unsafe {
+        let en: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+        // 会議アプリが音を出している機器。まだ出していなければ既定の機器（通話用 → 通常）。
+        let pick = || -> WinResult<(IMMDevice, String)> {
+            let device = match probe::render_device_of(root) {
+                Some(device) => device,
+                None => en
+                    .GetDefaultAudioEndpoint(eRender, eCommunications)
+                    .or_else(|_| en.GetDefaultAudioEndpoint(eRender, eConsole))?,
+            };
+            let id = device_id(&device)?;
+            Ok((device, id))
+        };
+        let (device, id) = pick()?;
+        let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+        let mix = client.GetMixFormat()?;
+        let format = Format::parse(mix);
+        let init = match format {
+            Some(_) => client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                BUFFER_HNS,
+                0,
+                mix,
+                None,
+            ),
+            None => Err(E_FAIL.into()),
+        };
+        CoTaskMemFree(Some(mix as *const _));
+        init?;
+        let format = format.unwrap();
+        meetrec_core::info!("相手音声のキャプチャ開始（PC から出る音すべて）: {format:?}");
+        // 出力機器の変更（イヤホン接続など）を 2 秒ごとに確認し、変わったら開き直す。
+        let mut last_check = Instant::now();
+        capture_loop(&client, format, SRC_APP, holder, stop, || {
+            if last_check.elapsed() < Duration::from_secs(2) {
+                return true;
+            }
+            last_check = Instant::now();
+            pick().is_ok_and(|(_, current)| current == id)
+        })
+    }
+}
+
+/// 相手の音を録る。`system` が false なら会議アプリが出す音だけ、true なら PC から出る音すべて
+/// （プロセス単位では録れないアプリ用。D36）。
+pub fn run_loopback(holder: Arc<Holder>, stop: Arc<AtomicBool>, pid: u32, system: bool) {
     sys::com_init_mta();
-    // プロセスループバックはミックスフォーマットを問い合わせられないので自分で指定する。
-    let format = Format {
-        rate: 48_000,
-        channels: 2,
-        bits: 16,
-        float: false,
-    };
-    let wave = WAVEFORMATEX {
-        wFormatTag: WAVE_FORMAT_PCM,
-        nChannels: format.channels,
-        nSamplesPerSec: format.rate,
-        nAvgBytesPerSec: format.rate * format.frame_bytes() as u32,
-        nBlockAlign: format.frame_bytes() as u16,
-        wBitsPerSample: format.bits,
-        cbSize: 0,
-    };
     // デバイス無効化などで止まっても、録画が続く限り開き直す（マイクと同じ方針）。
     let mut failures = 0u32;
-    // 録る対象。まずは会議アプリのルート（子プロセスを含む）。ルートを対象にしても無音のままで、子孫のプロセスが
-    // 音を出しているときは、そのプロセスを直接の対象にして開き直す（Windows の Teams で実機発生：音を出している
-    // 子プロセスがツリーに入っているのに、ルートを対象にすると無音しか届かない）。
-    let mut target = pid;
-    // ルートを対象にして音が届いたことがあれば、ルートで録れているので対象は変えない（Zoom など）。
-    let mut root_works = false;
     while !stop.load(Ordering::SeqCst) {
-        let sounded = Cell::new(0u64);
-        let opened = Cell::new(0u64);
-        let mut next: Option<u32> = None;
-        let mut checked = 0u64;
         let result = unsafe {
-            (|| -> WinResult<()> {
-                let client = activate_loopback(target, &stop)?;
-                client.Initialize(
-                    AUDCLNT_SHAREMODE_SHARED,
-                    AUDCLNT_STREAMFLAGS_LOOPBACK
-                        | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-                    BUFFER_HNS,
-                    0,
-                    &wave,
-                    None,
-                )?;
-                meetrec_core::info!(
-                    "相手音声のキャプチャ開始（プロセスループバック pid={target}）"
-                );
-                opened.set(sys::qpc_ns());
-                capture_loop(&client, format, SRC_APP, &holder, &stop, &sounded, || {
-                    let now = sys::qpc_ns();
-                    if now.saturating_sub(checked) < RETARGET_CHECK_NS {
-                        return true;
-                    }
-                    checked = now;
-                    if target == pid && sounded.get() != 0 {
-                        root_works = true;
-                    }
-                    // 音が届いている間と、ルートで録れている録画では何もしない。
-                    let quiet = now.saturating_sub(sounded.get().max(opened.get()));
-                    if root_works || quiet < SILENT_BEFORE_RETARGET_NS {
-                        return true;
-                    }
-                    next = next_target(pid, target, quiet >= SILENT_BEFORE_ROTATE_NS);
-                    next.is_none()
-                })
-            })()
+            if system {
+                system_loopback_once(pid, &holder, &stop)
+            } else {
+                process_loopback_once(pid, &holder, &stop)
+            }
         };
         if stop.load(Ordering::SeqCst) {
             break;
         }
-        if let (Ok(()), Some(to)) = (&result, next) {
-            meetrec_core::info!(
-                "相手音声が無音のため、対象を切り替えます: pid={target} → pid={to}"
-            );
-            target = to;
-            continue;
-        }
-        if let Err(e) = result {
-            // 未対応の OS などでは相手音声なしで続行する。ログは最初と、以後は間引いて出す。
-            if failures.is_multiple_of(20) {
-                meetrec_core::warn!("相手音声（プロセスループバック）を録音できません: {e}");
+        match result {
+            // 出力機器の変更：待たずに開き直す。
+            Ok(()) => continue,
+            Err(e) => {
+                // 未対応の OS などでは相手音声なしで続行する。ログは最初と、以後は間引いて出す。
+                if failures.is_multiple_of(20) {
+                    meetrec_core::warn!("相手音声を録音できません（再試行します）: {e}");
+                }
+                failures += 1;
             }
-            failures += 1;
         }
         // 3 秒おいて再試行（停止要求には 100ms 以内に応じる）。
         for _ in 0..30 {
@@ -392,10 +390,18 @@ unsafe fn default_mic(en: &IMMDeviceEnumerator) -> WinResult<(IMMDevice, String)
         let device = en
             .GetDefaultAudioEndpoint(eCapture, eCommunications)
             .or_else(|_| en.GetDefaultAudioEndpoint(eCapture, eConsole))?;
+        let id = device_id(&device)?;
+        Ok((device, id))
+    }
+}
+
+/// 機器の識別子（機器が変わったかを比べるため）。
+unsafe fn device_id(device: &IMMDevice) -> WinResult<String> {
+    unsafe {
         let id = device.GetId()?;
         let name = from_wide(id.as_wide());
         CoTaskMemFree(Some(id.0 as *const _));
-        Ok((device, name))
+        Ok(name)
     }
 }
 
@@ -422,24 +428,16 @@ unsafe fn mic_once(en: &IMMDeviceEnumerator, holder: &Holder, stop: &AtomicBool)
         meetrec_core::info!("マイクのキャプチャ開始: {format:?}");
         // 既定デバイスの変更（イヤホン接続など）を 2 秒ごとに確認し、変わったら開き直す。
         let mut last_check = Instant::now();
-        capture_loop(
-            &client,
-            format,
-            SRC_MIC,
-            holder,
-            stop,
-            &Cell::new(0),
-            || {
-                if last_check.elapsed() < Duration::from_secs(2) {
-                    return true;
-                }
-                last_check = Instant::now();
-                match default_mic(en) {
-                    Ok((_, current)) => current == id,
-                    Err(_) => false,
-                }
-            },
-        )
+        capture_loop(&client, format, SRC_MIC, holder, stop, || {
+            if last_check.elapsed() < Duration::from_secs(2) {
+                return true;
+            }
+            last_check = Instant::now();
+            match default_mic(en) {
+                Ok((_, current)) => current == id,
+                Err(_) => false,
+            }
+        })
     }
 }
 

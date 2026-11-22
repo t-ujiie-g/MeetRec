@@ -619,6 +619,7 @@ impl Controller {
             marker_dir: self.dirs.marker_dir(),
             window: window.clone(),
             root_pid,
+            system_audio: rule.system_audio,
             settings: self.cfg.record_settings(),
         };
         match p.start_recording(&req) {
@@ -1623,6 +1624,8 @@ mod tests {
             h.p.recording.as_ref().unwrap().window.as_ref().unwrap().id,
             2
         );
+        // Teams は「PC から出る音すべて」を録る指定で始まる（Windows の OS 層だけが使う）。
+        assert!(h.p.recording.as_ref().unwrap().system_audio);
         // 退出：会議ウィンドウが閉じ、本体だけが残る。本体の録画には移らない。
         h.p.windows = vec![main];
         h.ticks(2);

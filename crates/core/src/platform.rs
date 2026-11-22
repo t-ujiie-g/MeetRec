@@ -163,6 +163,8 @@ pub struct RecordRequest {
     pub window: Option<WindowInfo>,
     /// 音声を録る会議アプリのルートプロセス（Windows: プロセスツリーの根）。
     pub root_pid: Pid,
+    /// Windows：会議アプリの音だけでなく、PC から出る音すべてを録る（`AppRule::system_audio`）。
+    pub system_audio: bool,
     pub settings: RecordSettings,
 }
 
