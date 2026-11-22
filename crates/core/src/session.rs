@@ -722,7 +722,7 @@ mod tests {
 
     fn rig(name: &str, tweak: impl FnOnce(&mut SessionConfig)) -> Rig {
         let dir = temp_dir(name);
-        let path = dir.join("rec.mp4");
+        let path = dir.join("2026-11-20_1430_Zoom.mp4");
         let mut cfg = SessionConfig::new(path.clone(), dir.join("inprogress"));
         cfg.mixer_latency_ms = 0;
         tweak(&mut cfg);

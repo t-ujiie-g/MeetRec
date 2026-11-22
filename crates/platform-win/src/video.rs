@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use meetrec_core::platform::RecordSettings;
+use meetrec_core::platform::{RecordSettings, RecorderEvent};
 use meetrec_core::session::{canvas_size, SOFTWARE_MAX_LONG_SIDE};
 use windows::core::{Interface, Result as WinResult};
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
@@ -19,7 +19,7 @@ use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Media::MediaFoundation::{IMFDXGIDeviceManager, MFCreateDXGIDeviceManager};
 use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice;
 
-use crate::app::{post_recorder_event, REC_VIDEO_UNAVAILABLE};
+use crate::app::post_recorder_event;
 use crate::capture::{Capture, FrameQueue};
 use crate::convert::Converter;
 use crate::h264enc::{Config, H264Encoder};
@@ -109,7 +109,10 @@ pub fn run(holder: Arc<Holder>, shared: Arc<VideoShared>, params: Params) {
         meetrec_core::warn!("映像を録画できません（音声のみ継続）: {e}");
         // まだ映像トラックを書き始めていなければ、待たずに音声のみで開始させる。
         holder.with(|s| s.video_unavailable());
-        post_recorder_event(params.main_hwnd, REC_VIDEO_UNAVAILABLE, e.to_string());
+        post_recorder_event(
+            params.main_hwnd,
+            RecorderEvent::VideoUnavailable(e.to_string()),
+        );
     }
     shared.queue.clear();
 }

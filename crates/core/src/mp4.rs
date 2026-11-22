@@ -534,8 +534,14 @@ struct BoxHead {
     header: u64,
 }
 
+/// `pos` から `size` バイトのボックスが、長さ `len` のファイルに収まるか。
+/// `size` はファイルから読んだ値なので、加算の桁あふれも「収まらない」として扱う。
+fn fits(pos: u64, size: u64, len: u64) -> bool {
+    pos.checked_add(size).is_some_and(|end| end <= len)
+}
+
 fn read_head<R: Read + Seek>(r: &mut R, pos: u64, len: u64) -> io::Result<Option<BoxHead>> {
-    if pos + 8 > len {
+    if !fits(pos, 8, len) {
         return Ok(None);
     }
     r.seek(SeekFrom::Start(pos))?;
@@ -545,7 +551,7 @@ fn read_head<R: Read + Seek>(r: &mut R, pos: u64, len: u64) -> io::Result<Option
     let typ = [h[4], h[5], h[6], h[7]];
     let mut header = 8;
     if size == 1 {
-        if pos + 16 > len {
+        if !fits(pos, 16, len) {
             return Ok(None);
         }
         let mut l = [0u8; 8];
@@ -624,15 +630,19 @@ fn moof_track_ends(moof: &[u8], out: &mut Vec<(u32, u64)>) {
                         .count()
                         * 4;
                     if flags & 0x100 != 0 {
+                        // サンプル数はファイルから読んだ値。実際に入っているぶんだけ読む。
                         for n in 0..count {
-                            total += be32(p, at + n * per).unwrap_or(0) as u64;
+                            let Some(duration) = be32(p, at + n * per) else {
+                                break;
+                            };
+                            total = total.saturating_add(duration as u64);
                         }
                     }
                 }
                 _ => {}
             }
         }
-        out.push((id, base + total));
+        out.push((id, base.saturating_add(total)));
     }
 }
 
@@ -647,7 +657,7 @@ pub fn repair<F: Read + Write + Seek>(f: &mut F, len: u64) -> io::Result<RepairR
     // ヘッダ部（ftyp, moov）。
     while !have_moov {
         let head = read_head(f, pos, len)?.ok_or_else(|| invalid("no moov"))?;
-        if pos + head.size > len {
+        if !fits(pos, head.size, len) {
             return Err(invalid("truncated header"));
         }
         if &head.typ == b"moov" {
@@ -707,7 +717,7 @@ pub fn repair<F: Read + Write + Seek>(f: &mut F, len: u64) -> io::Result<RepairR
     let mut fragments = 0u32;
     let mut ends: Vec<(u32, u64)> = Vec::new();
     while let Ok(Some(head)) = read_head(f, pos, len) {
-        if pos + head.size > len {
+        if !fits(pos, head.size, len) {
             break;
         }
         match &head.typ {
@@ -721,7 +731,7 @@ pub fn repair<F: Read + Write + Seek>(f: &mut F, len: u64) -> io::Result<RepairR
                 }
                 let mdat_pos = pos + head.size;
                 match read_head(f, mdat_pos, len) {
-                    Ok(Some(m)) if &m.typ == b"mdat" && mdat_pos + m.size <= len => {
+                    Ok(Some(m)) if &m.typ == b"mdat" && fits(mdat_pos, m.size, len) => {
                         moof_track_ends(&moof, &mut ends);
                         fragments += 1;
                         pos = mdat_pos + m.size;
@@ -746,7 +756,8 @@ pub fn repair<F: Read + Write + Seek>(f: &mut F, len: u64) -> io::Result<RepairR
             .map(|(_, e)| *e)
             .max()
             .unwrap_or(0);
-        duration_ms = duration_ms.max(end * 1000 / *ts as u64);
+        let ms = end as u128 * 1000 / *ts as u128;
+        duration_ms = duration_ms.max(u64::try_from(ms).unwrap_or(u64::MAX));
     }
     let mut duration_patched = false;
     if let Some((at, version, cur)) = mehd {
@@ -976,6 +987,28 @@ pub(crate) mod tests {
         let full = build(2, true);
         assert!(repair(&mut Cursor::new(full[..40].to_vec()), 40).is_err());
         assert!(repair(&mut Cursor::new(b"not an mp4 file at all".to_vec()), 22).is_err());
+    }
+
+    #[test]
+    fn hostile_box_sizes_do_not_overflow() {
+        let good = build(4, true);
+        let good_len = good.len() as u64;
+        // 末尾に「長さ u64::MAX」のボックス：位置との加算があふれても、切り落とすだけで済む。
+        let mut buf = good.clone();
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(b"free");
+        buf.extend_from_slice(&u64::MAX.to_be_bytes());
+        let len = buf.len() as u64;
+        let r = repair(&mut Cursor::new(&mut buf), len).unwrap();
+        assert_eq!(r.valid_len, good_len);
+        assert_eq!(r.fragments, 2);
+
+        // trun のサンプル数を偽っても、実際に入っているぶんしか読まない（長時間回らない）。
+        let mut buf = good;
+        let trun = buf.windows(4).position(|w| w == b"trun").unwrap();
+        buf[trun + 8..trun + 12].copy_from_slice(&u32::MAX.to_be_bytes());
+        let r = repair(&mut Cursor::new(&mut buf), good_len).unwrap();
+        assert_eq!(r.fragments, 2);
     }
 
     #[test]

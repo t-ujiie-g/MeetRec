@@ -7,11 +7,11 @@ use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use meetrec_core::platform::{RecordRequest, RecordingSummary, WindowInfo};
+use meetrec_core::platform::{RecordRequest, RecorderEvent, RecordingSummary, WindowInfo};
 use meetrec_core::session::{Session, SessionConfig, SessionEvent};
 use windows::Win32::Media::MediaFoundation::{MFShutdown, MFStartup, MFSTARTUP_FULL, MF_VERSION};
 
-use crate::app::{post_recorder_event, REC_FAILED, REC_VIDEO_UNAVAILABLE};
+use crate::app::post_recorder_event;
 use crate::sys::QpcClock;
 use crate::video::VideoShared;
 use crate::{aac, audio, probe, video};
@@ -89,11 +89,12 @@ impl Recorder {
             Arc::new(QpcClock),
             Box::new(move || aac::create(bitrate)),
             Box::new(move |ev| match ev {
-                SessionEvent::WriteFailed(e) => post_recorder_event(main_hwnd, REC_FAILED, e),
+                SessionEvent::WriteFailed(e) => {
+                    post_recorder_event(main_hwnd, RecorderEvent::Failed(e))
+                }
                 SessionEvent::VideoTimeout => post_recorder_event(
                     main_hwnd,
-                    REC_VIDEO_UNAVAILABLE,
-                    "映像フレームが届きません".into(),
+                    RecorderEvent::VideoUnavailable("映像フレームが届きません".into()),
                 ),
                 SessionEvent::AudioEncoderFailed(e) => {
                     meetrec_core::warn!("音声エンコーダの失敗（映像のみ継続）: {e}")

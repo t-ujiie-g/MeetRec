@@ -93,12 +93,13 @@ impl Mixer {
     /// PCM を投入する。`pts_ns` は先頭サンプルの時刻（録画開始からの経過）、
     /// `data` は interleaved float。
     pub fn push(&mut self, source: usize, pts_ns: u64, rate: u32, channels: u16, data: &[f32]) {
-        if rate == 0 || channels == 0 || data.is_empty() {
+        let ch = channels as usize;
+        // 1 フレームに満たない入力（チャンネル数より短い）も捨てる。
+        if rate == 0 || ch == 0 || data.len() < ch {
             return;
         }
         let emitted = self.emitted;
         let s = &mut self.sources[source];
-        let ch = channels as usize;
         let n = data.len() / ch;
         let ts_pos = pos_of(pts_ns) as f64;
 
@@ -373,5 +374,14 @@ mod tests {
         assert_eq!(n, 10);
         m.pull(1250 * MS, false, 1000, |_, _| n += 1);
         assert_eq!(n, 48_000 / FRAME);
+    }
+
+    #[test]
+    fn input_shorter_than_one_frame_is_ignored() {
+        let mut m = Mixer::new(1, 0);
+        // ステレオなのに 1 サンプルしかない（1 フレームに満たない）。
+        m.push(0, 0, 48_000, 2, &[0.5]);
+        m.push(0, 0, 48_000, 2, &[]);
+        assert_eq!(m.stats(), MixerStats::default());
     }
 }

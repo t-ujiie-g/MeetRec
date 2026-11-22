@@ -6,6 +6,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use meetrec_core::platform::{
     App, LocalTime, MicUser, Notice, Permissions, Platform, PromptAnswer, PromptModel, RawUsage,
@@ -45,14 +46,10 @@ use crate::tray::{self, Tray};
 
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_PROMPT_ANSWER: u32 = WM_APP + 2;
-pub const WM_RECORDER: u32 = WM_APP + 3;
+const WM_RECORDER: u32 = WM_APP + 3;
 const WM_PERMISSIONS: u32 = WM_APP + 4;
 /// NIN_KEYSELECT（キーボードでのアイコン選択）。
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
-
-/// `WM_RECORDER` の wParam。
-pub const REC_FAILED: usize = 1;
-pub const REC_VIDEO_UNAVAILABLE: usize = 2;
 
 const TIMER_TICK: usize = 1;
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -89,21 +86,33 @@ fn dispatch(ev: UiEvent) {
     });
 }
 
+/// ワーカースレッドからメインスレッドへ送る録画イベント。
+/// ウィンドウメッセージは他プロセスからも送れるので、メッセージにはポインタを載せず
+/// 「キューを見よ」という合図だけにする（偽のメッセージで不正なアドレスを触らせない）。
+static RECORDER_EVENTS: Mutex<VecDeque<RecorderEvent>> = Mutex::new(VecDeque::new());
+
 /// ワーカースレッドからメインスレッドへ録画イベントを送る。
-pub fn post_recorder_event(hwnd: isize, kind: usize, message: String) {
-    let raw = Box::into_raw(Box::new(message));
+pub fn post_recorder_event(hwnd: isize, event: RecorderEvent) {
+    RECORDER_EVENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push_back(event);
     unsafe {
-        if PostMessageW(
+        let _ = PostMessageW(
             Some(HWND(hwnd as *mut _)),
             WM_RECORDER,
-            WPARAM(kind),
-            LPARAM(raw as isize),
-        )
-        .is_err()
-        {
-            drop(Box::from_raw(raw));
-        }
+            WPARAM(0),
+            LPARAM(0),
+        );
     }
+}
+
+/// 処理中はロックを持たない（イベント処理の中から次のイベントが積まれることがある）。
+fn next_recorder_event() -> Option<RecorderEvent> {
+    RECORDER_EVENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .pop_front()
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -152,12 +161,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_RECORDER => {
-            let message = *Box::from_raw(lparam.0 as *mut String);
-            let ev = match wparam.0 {
-                REC_FAILED => RecorderEvent::Failed(message),
-                _ => RecorderEvent::VideoUnavailable(message),
-            };
-            dispatch(UiEvent::Recorder(ev));
+            while let Some(event) = next_recorder_event() {
+                dispatch(UiEvent::Recorder(event));
+            }
             LRESULT(0)
         }
         WM_PERMISSIONS => {
