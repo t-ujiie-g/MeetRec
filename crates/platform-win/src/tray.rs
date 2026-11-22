@@ -31,6 +31,7 @@ const ID_AUTOSTART: usize = 4;
 const ID_DIAG: usize = 5;
 const ID_QUIT: usize = 6;
 const ID_FOLDER: usize = 7;
+const ID_MIC: usize = 8;
 const ID_MODE_ASK: usize = 10;
 const ID_MODE_AUTO: usize = 11;
 const ID_MODE_OFF: usize = 12;
@@ -122,6 +123,7 @@ impl Tray {
                 status: text::STATUS_IDLE.into(),
                 mode: Mode::Ask,
                 autostart: false,
+                mic: true,
             },
             added: false,
         };
@@ -240,12 +242,14 @@ pub fn show_menu(hwnd: HWND, model: &TrayModel) -> Option<MenuAction> {
             item(modes, MF_STRING | check, id, text::mode_label(mode));
         }
         item(menu, MF_POPUP, modes.0 as usize, text::MENU_MODE);
-        let check = if model.autostart {
-            MF_CHECKED
-        } else {
-            MENU_ITEM_FLAGS(0)
-        };
-        item(menu, MF_STRING | check, ID_AUTOSTART, text::MENU_AUTOSTART);
+        let checked = |on: bool| if on { MF_CHECKED } else { MENU_ITEM_FLAGS(0) };
+        item(menu, MF_STRING | checked(model.mic), ID_MIC, text::MENU_MIC);
+        item(
+            menu,
+            MF_STRING | checked(model.autostart),
+            ID_AUTOSTART,
+            text::MENU_AUTOSTART,
+        );
         item(menu, MF_STRING, ID_DIAG, text::MENU_DIAGNOSTICS);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         item(menu, MF_STRING, ID_QUIT, text::MENU_QUIT);
@@ -272,6 +276,7 @@ pub fn show_menu(hwnd: HWND, model: &TrayModel) -> Option<MenuAction> {
             ID_OPEN => Some(MenuAction::OpenFolder),
             ID_FOLDER => Some(MenuAction::ChooseFolder),
             ID_AUTOSTART => Some(MenuAction::ToggleAutostart),
+            ID_MIC => Some(MenuAction::ToggleMic),
             ID_DIAG => Some(MenuAction::SaveDiagnostics),
             ID_QUIT => Some(MenuAction::Quit),
             ID_MODE_ASK => Some(MenuAction::SetMode(Mode::Ask)),

@@ -52,6 +52,8 @@ impl Default for VideoConfig {
 pub struct AudioConfig {
     pub bitrate_kbps: u32,
     pub capture_mic: bool,
+    /// 会議アプリでミュートしている間は、自分のマイクを録らない（見分けられない場合は録り続ける）。
+    pub follow_app_mute: bool,
     /// true なら「ミックス」に加えて相手音声・マイクを別トラックでも保存する。
     pub separate_tracks: bool,
 }
@@ -61,6 +63,7 @@ impl Default for AudioConfig {
         Self {
             bitrate_kbps: 96,
             capture_mic: true,
+            follow_app_mute: true,
             separate_tracks: false,
         }
     }

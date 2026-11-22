@@ -26,7 +26,10 @@ use objc2_core_graphics::{
 };
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
 
-use crate::sys;
+use crate::{ax, sys};
+
+/// 診断ログに画面部品を書き出す会議アプリ（本体のバンドル ID）。
+const CONTROL_DUMP_BUNDLES: &[&str] = &["us.zoom.xos", "com.microsoft.teams2"];
 
 /// 祖先チェーンの最大段数（本人を含む）。
 const MAX_CHAIN: usize = 6;
@@ -293,6 +296,7 @@ impl Probe {
             s,
             "-- 名前/パス/バンドル ID に zoom・teams を含むプロセス --"
         );
+        let mut apps = Vec::new();
         for pid in sys::all_pids() {
             let path = sys::proc_path(pid).unwrap_or_default();
             let lower = path.to_lowercase();
@@ -300,11 +304,34 @@ impl Probe {
                 continue;
             }
             let parent = sys::proc_parent_and_name(pid).map_or(0, |(p, _)| p);
+            let bundle = self.bundle_id(pid);
             let _ = writeln!(
                 s,
-                "pid={pid} ppid={parent} name={:?} bundle={:?} path={path:?}",
+                "pid={pid} ppid={parent} name={:?} bundle={bundle:?} path={path:?}",
                 sys::proc_name(pid).unwrap_or_default(),
-                self.bundle_id(pid),
+            );
+            // 本体のアプリ（ヘルパーではないもの）だけ、あとで画面部品を書き出す。
+            if bundle
+                .as_deref()
+                .is_some_and(|b| CONTROL_DUMP_BUNDLES.contains(&b))
+            {
+                apps.push((pid, bundle.unwrap_or_default()));
+            }
+        }
+        // ミュートボタンなどの見え方を実機で調べるための書き出し（会議アプリの部品の名前だけ）。
+        let trusted = ax::trusted(true);
+        let _ = writeln!(
+            s,
+            "-- 会議アプリの画面部品（アクセシビリティの許可: {trusted}） --"
+        );
+        if trusted {
+            for (pid, bundle) in apps {
+                let _ = writeln!(s, "== {bundle} (pid={pid}) ==\n{}", ax::dump_controls(pid));
+            }
+        } else {
+            let _ = writeln!(
+                s,
+                "(システム設定 → プライバシーとセキュリティ → アクセシビリティ で MeetRec をオンにすると書き出します)"
             );
         }
         let _ = writeln!(s, "-- CoreAudio プロセスオブジェクト --");

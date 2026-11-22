@@ -13,6 +13,7 @@ pub const MENU_STOP: &str = "録画を停止";
 pub const MENU_OPEN_FOLDER: &str = "録画フォルダを開く";
 pub const MENU_CHOOSE_FOLDER: &str = "保存先を変更…";
 pub const MENU_MODE: &str = "会議を検出したとき";
+pub const MENU_MIC: &str = "自分の声を録る";
 pub const MENU_AUTOSTART: &str = "ログイン時に起動";
 pub const MENU_DIAGNOSTICS: &str = "診断ログを保存";
 pub const MENU_QUIT: &str = "MeetRec を終了";
