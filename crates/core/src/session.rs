@@ -11,10 +11,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::audio::{Mixer, MixerStats, FRAME, FRAME_LEN, OUT_RATE};
+use crate::audio::{FRAME, FRAME_LEN, Mixer, MixerStats, OUT_RATE};
 use crate::h264;
 use crate::mp4::{self, FragWriter, TrackKind, TrackSpec, VIDEO_TIMESCALE};
-use crate::platform::{RecordingSummary, NS_PER_SEC};
+use crate::platform::{NS_PER_SEC, RecordingSummary};
 use crate::storage;
 
 pub const SRC_APP: usize = 0;
@@ -422,14 +422,15 @@ impl Ticker {
             return;
         }
         let due = now_ms.saturating_sub(mux.last_flush_ms) >= shared.cfg.fragment_ms as u64;
-        if due && !stopping {
-            if let Some(w) = mux.writer.as_mut() {
-                // sync_data まで行い、電源断でも直前のフラグメントまで残す。
-                let res = w.flush(now_ms).and_then(|_| w.get_mut().sync_data());
-                mux.last_flush_ms = now_ms;
-                if let Err(e) = res {
-                    shared.fail(&mut mux, e);
-                }
+        if due
+            && !stopping
+            && let Some(w) = mux.writer.as_mut()
+        {
+            // sync_data まで行い、電源断でも直前のフラグメントまで残す。
+            let res = w.flush(now_ms).and_then(|_| w.get_mut().sync_data());
+            mux.last_flush_ms = now_ms;
+            if let Err(e) = res {
+                shared.fail(&mut mux, e);
             }
         }
     }
@@ -828,10 +829,12 @@ mod tests {
         assert!(marker.exists());
         let out = storage::recover(marker.parent().unwrap());
         match &out[..] {
-            [storage::RecoveryOutcome::Repaired {
-                path: p,
-                duration_ms,
-            }] => {
+            [
+                storage::RecoveryOutcome::Repaired {
+                    path: p,
+                    duration_ms,
+                },
+            ] => {
                 assert_eq!(p, &path);
                 assert!((3_900..=4_300).contains(duration_ms), "{duration_ms}");
             }

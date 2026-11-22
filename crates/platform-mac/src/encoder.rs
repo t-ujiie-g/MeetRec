@@ -3,25 +3,25 @@
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-use meetrec_core::platform::{RecordSettings, NS_PER_SEC};
+use meetrec_core::platform::{NS_PER_SEC, RecordSettings};
 use meetrec_core::session::Session;
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_media::{
-    kCMSampleAttachmentKey_NotSync, kCMVideoCodecType_H264, CMSampleBuffer, CMTime, CMTimeFlags,
-    CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
+    CMSampleBuffer, CMTime, CMTimeFlags, CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
+    kCMSampleAttachmentKey_NotSync, kCMVideoCodecType_H264,
 };
 use objc2_core_video::CVImageBuffer;
 use objc2_video_toolbox::{
+    VTCompressionSession, VTEncodeInfoFlags, VTSessionSetProperty,
     kVTCompressionPropertyKey_AllowFrameReordering, kVTCompressionPropertyKey_AverageBitRate,
     kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_MaxKeyFrameInterval,
     kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, kVTCompressionPropertyKey_ProfileLevel,
     kVTCompressionPropertyKey_RealTime, kVTProfileLevel_H264_High_AutoLevel,
     kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder,
-    kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder, VTCompressionSession,
-    VTEncodeInfoFlags, VTSessionSetProperty,
+    kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
 };
 
 /// キャプチャの PTS とホスト時計の差がこれ以上なら、別の時計とみなして補正する。
@@ -146,45 +146,43 @@ unsafe extern "C-unwind" fn output_callback(
         }
         // NotSync が無い（または false）ならキーフレーム。
         let mut key = true;
-        if let Some(att) = sbuf.sample_attachments_array(false) {
-            if att.count() > 0 {
-                let dict = att.value_at_index(0) as *const CFDictionary;
-                if let Some(dict) = dict.as_ref() {
-                    let k = kCMSampleAttachmentKey_NotSync as *const CFString as *const c_void;
-                    let v = dict.value(k) as *const CFBoolean;
-                    if let Some(v) = v.as_ref() {
-                        key = !v.value();
-                    }
+        if let Some(att) = sbuf.sample_attachments_array(false)
+            && att.count() > 0
+        {
+            let dict = att.value_at_index(0) as *const CFDictionary;
+            if let Some(dict) = dict.as_ref() {
+                let k = kCMSampleAttachmentKey_NotSync as *const CFString as *const c_void;
+                let v = dict.value(k) as *const CFBoolean;
+                if let Some(v) = v.as_ref() {
+                    key = !v.value();
                 }
             }
         }
         let mut sps: Option<Vec<u8>> = None;
         let mut pps: Option<Vec<u8>> = None;
-        if key {
-            if let Some(fmt) = sbuf.format_description() {
-                let get = |index: usize| -> Option<Vec<u8>> {
-                    let mut ptr: *const u8 = std::ptr::null();
-                    let mut size = 0usize;
-                    let mut nal_len = 0i32;
-                    let st = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                        &fmt,
-                        index,
-                        &mut ptr,
-                        &mut size,
-                        std::ptr::null_mut(),
-                        &mut nal_len,
-                    );
-                    if st != 0 || ptr.is_null() || size == 0 {
-                        return None;
-                    }
-                    if nal_len != 4 && ctx.errors.fetch_add(1, Ordering::Relaxed) == 0 {
-                        meetrec_core::warn!("想定外の NAL 長プレフィックス: {nal_len}");
-                    }
-                    Some(std::slice::from_raw_parts(ptr, size).to_vec())
-                };
-                sps = get(0);
-                pps = get(1);
-            }
+        if key && let Some(fmt) = sbuf.format_description() {
+            let get = |index: usize| -> Option<Vec<u8>> {
+                let mut ptr: *const u8 = std::ptr::null();
+                let mut size = 0usize;
+                let mut nal_len = 0i32;
+                let st = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                    &fmt,
+                    index,
+                    &mut ptr,
+                    &mut size,
+                    std::ptr::null_mut(),
+                    &mut nal_len,
+                );
+                if st != 0 || ptr.is_null() || size == 0 {
+                    return None;
+                }
+                if nal_len != 4 && ctx.errors.fetch_add(1, Ordering::Relaxed) == 0 {
+                    meetrec_core::warn!("想定外の NAL 長プレフィックス: {nal_len}");
+                }
+                Some(std::slice::from_raw_parts(ptr, size).to_vec())
+            };
+            sps = get(0);
+            pps = get(1);
         }
         ctx.session.push_video_avcc(
             ctx.clock.apply(pts),

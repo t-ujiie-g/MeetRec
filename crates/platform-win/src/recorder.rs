@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use meetrec_core::platform::{RecordRequest, RecorderEvent, RecordingSummary, WindowInfo};
 use meetrec_core::session::{Session, SessionConfig, SessionEvent};
-use windows::Win32::Media::MediaFoundation::{MFShutdown, MFStartup, MFSTARTUP_FULL, MF_VERSION};
+use windows::Win32::Media::MediaFoundation::{MF_VERSION, MFSTARTUP_FULL, MFShutdown, MFStartup};
 
 use crate::app::post_recorder_event;
 use crate::sys::QpcClock;
@@ -24,10 +24,10 @@ pub struct Holder(RwLock<Option<Session>>);
 
 impl Holder {
     pub fn with(&self, f: impl FnOnce(&Session)) {
-        if let Ok(guard) = self.0.read() {
-            if let Some(s) = guard.as_ref() {
-                f(s);
-            }
+        if let Ok(guard) = self.0.read()
+            && let Some(s) = guard.as_ref()
+        {
+            f(s);
         }
     }
 

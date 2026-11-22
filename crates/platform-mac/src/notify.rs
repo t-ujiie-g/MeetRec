@@ -5,7 +5,7 @@ use block2::RcBlock;
 use meetrec_core::platform::Notice;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{define_class, msg_send, AllocAnyThread};
+use objc2::{AllocAnyThread, define_class, msg_send};
 use objc2_foundation::{NSBundle, NSDictionary, NSError, NSString};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,

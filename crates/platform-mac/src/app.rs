@@ -15,7 +15,7 @@ use meetrec_core::platform::{
 };
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly, Message};
+use objc2::{MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy,
     NSApplicationDelegate, NSApplicationTerminateReply, NSMenuItem, NSWorkspace,
@@ -34,7 +34,7 @@ use crate::notify::Notifier;
 use crate::probe::Probe;
 use crate::prompt::Prompt;
 use crate::sys;
-use crate::tray::{action_for_tag, Tray};
+use crate::tray::{Tray, action_for_tag};
 
 /// メインスレッドで順に処理する項目。
 pub enum Item {
@@ -429,11 +429,11 @@ impl Platform for MacPlatform {
     }
 
     fn retarget(&mut self, window: &WindowInfo) {
-        if let Some(recorder) = self.recorder.as_mut() {
-            if !recorder.retarget(window) {
-                // 映像も音声も取れない：録画を続けても空になるので中断として知らせる。
-                post_recorder(RecorderEvent::Failed("キャプチャを継続できません".into()));
-            }
+        if let Some(recorder) = self.recorder.as_mut()
+            && !recorder.retarget(window)
+        {
+            // 映像も音声も取れない：録画を続けても空になるので中断として知らせる。
+            post_recorder(RecorderEvent::Failed("キャプチャを継続できません".into()));
         }
     }
 

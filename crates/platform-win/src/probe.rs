@@ -4,20 +4,20 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use meetrec_core::platform::{MicUser, ProcInfo, WindowInfo};
-use windows::core::{w, Interface, BOOL, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
-use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Media::Audio::{
-    eCapture, AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2,
-    IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+    AudioSessionStateActive, DEVICE_STATE_ACTIVE, IAudioSessionControl2, IAudioSessionManager2,
+    IMMDeviceEnumerator, MMDeviceEnumerator, eCapture,
 };
-use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
-use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
+use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetClientRect, GetWindowPlacement, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, WINDOWPLACEMENT,
 };
+use windows::core::{BOOL, Interface, PCWSTR, w};
 
 use crate::sys::{self, ProcEntry};
 
@@ -126,69 +126,71 @@ impl Probe {
             names: HashMap<u32, String>,
         }
         unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
-            let ctx = &mut *(lparam.0 as *mut Ctx);
-            if !IsWindowVisible(hwnd).as_bool() {
-                return true.into();
-            }
-            // 別の仮想デスクトップや UWP の待機ウィンドウ（クローク）は除く。
-            let mut cloaked = 0u32;
-            let _ = DwmGetWindowAttribute(
-                hwnd,
-                DWMWA_CLOAKED,
-                &mut cloaked as *mut u32 as *mut _,
-                std::mem::size_of::<u32>() as u32,
-            );
-            if cloaked != 0 {
-                return true.into();
-            }
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(hwnd, Some(&mut pid));
-            if pid == 0 {
-                return true.into();
-            }
-            let minimized = IsIconic(hwnd).as_bool();
-            let mut rect = RECT::default();
-            if minimized {
-                let mut wp = WINDOWPLACEMENT {
-                    length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
-                    ..Default::default()
-                };
-                if GetWindowPlacement(hwnd, &mut wp).is_ok() {
-                    rect = wp.rcNormalPosition;
+            unsafe {
+                let ctx = &mut *(lparam.0 as *mut Ctx);
+                if !IsWindowVisible(hwnd).as_bool() {
+                    return true.into();
                 }
-            } else {
-                let _ = GetClientRect(hwnd, &mut rect);
+                // 別の仮想デスクトップや UWP の待機ウィンドウ（クローク）は除く。
+                let mut cloaked = 0u32;
+                let _ = DwmGetWindowAttribute(
+                    hwnd,
+                    DWMWA_CLOAKED,
+                    &mut cloaked as *mut u32 as *mut _,
+                    std::mem::size_of::<u32>() as u32,
+                );
+                if cloaked != 0 {
+                    return true.into();
+                }
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                if pid == 0 {
+                    return true.into();
+                }
+                let minimized = IsIconic(hwnd).as_bool();
+                let mut rect = RECT::default();
+                if minimized {
+                    let mut wp = WINDOWPLACEMENT {
+                        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                        ..Default::default()
+                    };
+                    if GetWindowPlacement(hwnd, &mut wp).is_ok() {
+                        rect = wp.rcNormalPosition;
+                    }
+                } else {
+                    let _ = GetClientRect(hwnd, &mut rect);
+                }
+                let width = (rect.right - rect.left).max(0) as u32;
+                let height = (rect.bottom - rect.top).max(0) as u32;
+                if width == 0 || height == 0 {
+                    return true.into();
+                }
+                let mut class = [0u16; 256];
+                let n = GetClassNameW(hwnd, &mut class).max(0) as usize;
+                let class = String::from_utf16_lossy(&class[..n]);
+                let mut title = [0u16; 512];
+                let n = GetWindowTextW(hwnd, &mut title).max(0) as usize;
+                let title = String::from_utf16_lossy(&title[..n]);
+                let name = ctx
+                    .names
+                    .entry(pid)
+                    .or_insert_with(|| sys::process_name(pid).unwrap_or_default())
+                    .clone();
+                ctx.out.push(WindowInfo {
+                    id: hwnd.0 as usize as u64,
+                    owner: ProcInfo {
+                        pid,
+                        name,
+                        bundle_id: None,
+                    },
+                    title,
+                    class,
+                    width,
+                    height,
+                    minimized,
+                });
+                true.into()
             }
-            let width = (rect.right - rect.left).max(0) as u32;
-            let height = (rect.bottom - rect.top).max(0) as u32;
-            if width == 0 || height == 0 {
-                return true.into();
-            }
-            let mut class = [0u16; 256];
-            let n = GetClassNameW(hwnd, &mut class).max(0) as usize;
-            let class = String::from_utf16_lossy(&class[..n]);
-            let mut title = [0u16; 512];
-            let n = GetWindowTextW(hwnd, &mut title).max(0) as usize;
-            let title = String::from_utf16_lossy(&title[..n]);
-            let name = ctx
-                .names
-                .entry(pid)
-                .or_insert_with(|| sys::process_name(pid).unwrap_or_default())
-                .clone();
-            ctx.out.push(WindowInfo {
-                id: hwnd.0 as usize as u64,
-                owner: ProcInfo {
-                    pid,
-                    name,
-                    bundle_id: None,
-                },
-                title,
-                class,
-                width,
-                height,
-                minimized,
-            });
-            true.into()
         }
         let mut ctx = Ctx {
             out: Vec::new(),

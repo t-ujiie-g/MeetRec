@@ -8,14 +8,14 @@ use std::ptr::NonNull;
 use meetrec_core::audio::{DEFAULT_ASC, FRAME, FRAME_LEN, OUT_RATE};
 use meetrec_core::session::AacEncoder;
 use objc2_audio_toolbox::{
+    AudioConverterDispose, AudioConverterFillComplexBuffer, AudioConverterGetProperty,
+    AudioConverterNew, AudioConverterRef, AudioConverterSetProperty,
     kAudioConverterCompressionMagicCookie, kAudioConverterEncodeBitRate,
-    kAudioConverterPropertyMaximumOutputPacketSize, AudioConverterDispose,
-    AudioConverterFillComplexBuffer, AudioConverterGetProperty, AudioConverterNew,
-    AudioConverterRef, AudioConverterSetProperty,
+    kAudioConverterPropertyMaximumOutputPacketSize,
 };
 use objc2_core_audio_types::{
-    kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked, kAudioFormatLinearPCM, kAudioFormatMPEG4AAC,
     AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioStreamPacketDescription,
+    kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked, kAudioFormatLinearPCM, kAudioFormatMPEG4AAC,
 };
 
 /// 入力コールバックが「今は渡せるデータがない」ことを伝えるための独自ステータス。
@@ -86,7 +86,7 @@ fn asc_from_cookie(cookie: &[u8]) -> Option<Vec<u8>> {
                 return cookie
                     .get(i..i + len)
                     .map(<[u8]>::to_vec)
-                    .filter(|a| a.len() >= 2)
+                    .filter(|a| a.len() >= 2);
             }
             _ => i += len,
         }
@@ -171,10 +171,10 @@ impl MacAac {
                 NonNull::from(&mut size),
                 NonNull::from(&mut cookie).cast(),
             );
-            if st == 0 {
-                if let Some(asc) = asc_from_cookie(&cookie[..(size as usize).min(cookie.len())]) {
-                    this.asc = asc;
-                }
+            if st == 0
+                && let Some(asc) = asc_from_cookie(&cookie[..(size as usize).min(cookie.len())])
+            {
+                this.asc = asc;
             }
         }
         Ok(this)

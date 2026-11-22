@@ -760,16 +760,16 @@ pub fn repair<F: Read + Write + Seek>(f: &mut F, len: u64) -> io::Result<RepairR
         duration_ms = duration_ms.max(u64::try_from(ms).unwrap_or(u64::MAX));
     }
     let mut duration_patched = false;
-    if let Some((at, version, cur)) = mehd {
-        if cur != duration_ms {
-            f.seek(SeekFrom::Start(at))?;
-            if version == 1 {
-                f.write_all(&duration_ms.to_be_bytes())?;
-            } else {
-                f.write_all(&(duration_ms.min(u32::MAX as u64) as u32).to_be_bytes())?;
-            }
-            duration_patched = true;
+    if let Some((at, version, cur)) = mehd
+        && cur != duration_ms
+    {
+        f.seek(SeekFrom::Start(at))?;
+        if version == 1 {
+            f.write_all(&duration_ms.to_be_bytes())?;
+        } else {
+            f.write_all(&(duration_ms.min(u32::MAX as u64) as u32).to_be_bytes())?;
         }
+        duration_patched = true;
     }
     Ok(RepairReport {
         fragments,

@@ -47,16 +47,17 @@ impl Metrics {
         } else {
             &mut self.idle
         };
-        if let Some((t, prev, was_recording)) = self.last {
-            if was_recording == recording && now_ns > t {
-                let wall = (now_ns - t) as f64 / 1e9;
-                let cpu = usage.cpu_time_ns.saturating_sub(prev.cpu_time_ns) as f64 / 1e9;
-                stats.wall_seconds += wall;
-                stats.cpu_seconds += cpu;
-                let pct = cpu / wall * 100.0;
-                stats.cpu_peak_percent = stats.cpu_peak_percent.max(pct);
-                interval_cpu = Some(pct);
-            }
+        if let Some((t, prev, was_recording)) = self.last
+            && was_recording == recording
+            && now_ns > t
+        {
+            let wall = (now_ns - t) as f64 / 1e9;
+            let cpu = usage.cpu_time_ns.saturating_sub(prev.cpu_time_ns) as f64 / 1e9;
+            stats.wall_seconds += wall;
+            stats.cpu_seconds += cpu;
+            let pct = cpu / wall * 100.0;
+            stats.cpu_peak_percent = stats.cpu_peak_percent.max(pct);
+            interval_cpu = Some(pct);
         }
         if stats.samples == 0 {
             stats.rss_first = usage.rss_bytes;

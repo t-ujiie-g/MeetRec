@@ -10,8 +10,8 @@ use crate::config::{Config, Mode};
 use crate::detect::{DetectEvent, Detector};
 use crate::metrics::Metrics;
 use crate::platform::{
-    App, MenuAction, Notice, Permissions, Pid, Platform, PromptAnswer, PromptModel, RecordRequest,
-    RecorderEvent, TrayModel, UiEvent, NS_PER_SEC as NS,
+    App, MenuAction, NS_PER_SEC as NS, Notice, Permissions, Pid, Platform, PromptAnswer,
+    PromptModel, RecordRequest, RecorderEvent, TrayModel, UiEvent,
 };
 use crate::rules::{Observation, Rules};
 use crate::storage::{self, Dirs, RecoveryOutcome};
@@ -226,11 +226,12 @@ impl Controller {
             Some(DetectEvent::Ended { app }) => self.meeting_ended(p, app),
             None => {}
         }
-        if let Some(m) = self.meeting {
-            if m.decision == Decision::ResumeAfterWake && self.rec.is_none() {
-                crate::info!("スリープ復帰後も会議が続いているため録画を再開します");
-                self.start_for_meeting(p, m, &obs);
-            }
+        if let Some(m) = self.meeting
+            && m.decision == Decision::ResumeAfterWake
+            && self.rec.is_none()
+        {
+            crate::info!("スリープ復帰後も会議が続いているため録画を再開します");
+            self.start_for_meeting(p, m, &obs);
         }
         self.follow(p, &obs, now);
         self.housekeeping(p, now);
@@ -523,23 +524,24 @@ impl Controller {
         let summary = p.stop_recording();
         crate::info!("録画停止: {summary:?}");
         crate::info!("録画中の計測:\n{}", self.metrics.report());
-        if let Some(s) = summary {
-            if notify && !s.empty {
-                let name = s
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                self.notify(
-                    p,
-                    format!(
-                        "{}\n{name}（{}）",
-                        text::NOTICE_SAVED,
-                        text::duration_text(s.duration_ms)
-                    ),
-                    Some(self.output_dir()),
-                );
-            }
+        if let Some(s) = summary
+            && notify
+            && !s.empty
+        {
+            let name = s
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.notify(
+                p,
+                format!(
+                    "{}\n{name}（{}）",
+                    text::NOTICE_SAVED,
+                    text::duration_text(s.duration_ms)
+                ),
+                Some(self.output_dir()),
+            );
         }
     }
 
@@ -674,11 +676,11 @@ impl Controller {
             }
             RecorderEvent::VideoUnavailable(msg) => {
                 crate::warn!("映像を取得できません: {msg}");
-                if let Some(rec) = self.rec.as_mut() {
-                    if !rec.audio_only_notified {
-                        rec.audio_only_notified = true;
-                        self.notify(p, text::NOTICE_AUDIO_ONLY, None);
-                    }
+                if let Some(rec) = self.rec.as_mut()
+                    && !rec.audio_only_notified
+                {
+                    rec.audio_only_notified = true;
+                    self.notify(p, text::NOTICE_AUDIO_ONLY, None);
                 }
             }
         }
@@ -769,7 +771,9 @@ impl Controller {
                         w.width,
                         w.height,
                         w.minimized,
-                        score.map_or("一致なし".into(), |(sc, cap)| format!("{sc}点 capture={cap}")),
+                        score.map_or("一致なし".into(), |(sc, cap)| format!(
+                            "{sc}点 capture={cap}"
+                        )),
                     );
                 }
                 None => others += 1,

@@ -316,7 +316,7 @@ mod tests {
     fn gap_and_device_switch_resync() {
         let mut m = Mixer::new(1, 0);
         m.push(0, 0, 48_000, 2, &vec![0.5f32; 4800 * 2]); // 0〜100ms
-                                                          // デバイス切替：400ms 欠落し、レートも変わる。
+        // デバイス切替：400ms 欠落し、レートも変わる。
         m.push(0, 500 * MS, 44_100, 2, &vec![0.25f32; 4410 * 2]); // 500〜600ms
         assert_eq!(m.stats().resyncs, 1);
         let (mix, _) = collect(&mut m, 700 * MS, true);

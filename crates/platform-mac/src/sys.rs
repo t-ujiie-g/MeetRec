@@ -5,7 +5,7 @@ use std::mem::{size_of, zeroed};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use meetrec_core::platform::{LocalTime, RawUsage, NS_PER_SEC};
+use meetrec_core::platform::{LocalTime, NS_PER_SEC, RawUsage};
 
 /// mach_absolute_time をナノ秒にしたもの。ScreenCaptureKit のサンプルの PTS
 /// （ホスト時計）と同じ時間軸。スリープ中は進まない。
