@@ -35,14 +35,16 @@ packaging/macos/bundle.sh target/release/meetrec dist                    # macOS
 
 ```
 crates/core            OS 非依存のロジック（Linux でもテストできる）
-  rules.rs / detect.rs   会議アプリの定数表と、検出の状態機械
-  controller.rs          全体の制御（確認ポップアップ・録画の開始と停止・ウィンドウ追従・ディスク監視）
+  rules.rs / detect.rs   会議アプリの規則（型と照合）と、検出の状態機械
+  rules/builtin.rs       組み込みの定数表（Zoom / Teams のプロセス名・ウィンドウ・ミュートの見分け方）
+  controller.rs          全体の制御（確認ポップアップ・録画の開始と停止・ディスク監視・メニュー）
+  controller/            録画中の追従（recording.rs）、診断ログ（diagnostics.rs）、テスト（tests.rs）
   session.rs             録画セッション（ミキサ → AAC → fragmented MP4）
   audio.rs / mp4.rs / h264.rs   音声ミキサ、fMP4 の muxer と修復、H.264 の変換
   storage.rs / config.rs / log.rs / metrics.rs / text.rs   保存、設定、ログ、自己計測、UI 文言
   platform.rs            OS 層との境界（`Platform` / `App` trait と受け渡す型）
-crates/platform-mac    macOS 層（ScreenCaptureKit / VideoToolbox / AudioToolbox / CoreAudio / AppKit）
-crates/platform-win    Windows 層（Windows.Graphics.Capture / Media Foundation / WASAPI / Win32）
+crates/platform-mac    macOS 層（ScreenCaptureKit / VideoToolbox / AudioToolbox / CoreAudio / AppKit / アクセシビリティ API）
+crates/platform-win    Windows 層（Windows.Graphics.Capture / Media Foundation / WASAPI / Win32 / UI オートメーション）
 crates/app             エントリポイント（`main.rs`）と Windows のマニフェスト埋め込み（`build.rs`）
 packaging/macos        .app の組み立てと署名
 packaging/windows      インストーラ（Inno Setup の `MeetRec.iss`。CI の Windows ジョブが `MeetRec-setup.exe` を作る）
@@ -61,9 +63,13 @@ docs                   実機確認の手順、署名・公証の手順
 - **外から来る値を信用しない。** 設定ファイル、ウィンドウタイトル（ファイル名にするときは `storage::sanitize_component` を通す）、
   進行中マーカーの中身、修復対象の MP4、他プロセスからも送れるウィンドウメッセージ（D25〜D27）。
 - **ログ・診断ログに、会議アプリ以外のウィンドウタイトルを出さない**（D13）。
-- **実機で分かった会議アプリの挙動は、テストにして残す。** ウィンドウの名前・階層・退出後に残るウィンドウなどは
-  `rules.rs` / `controller.rs` のテストに「実機で確認」と書いて固定する（D30〜D32）。録画が止まらない・別の画面を録る、
-  といった不具合はここから起きる。
+- **実機で分かった会議アプリの挙動は、テストにして残す。** ウィンドウの名前・階層・退出後に残るウィンドウ・ミュートの部品の
+  名前などは `rules.rs` / `controller/tests.rs` のテストに「実機で確認」と書いて固定する（D30〜D36）。録画が止まらない・
+  別の画面を録る、といった不具合はここから起きる。
+- **会議アプリごとの違いは `rules/builtin.rs` の表に書く。** OS 層や controller に「Teams なら」のような分岐を書かない
+  （例：共有中の目印 `sharing`、ミュートの見分け方 `mute`、PC から出る音すべてを録る `system_audio`）。
+- **分からないときは録る側に倒す。** ミュート状態を読めない、共有しているディスプレイを決められない、といった場合に
+  自分の発言や映像を捨てない。ただし、共有していない画面を録るおそれがあるときは切り替えない（D31・D35）。
 - **実機で確かめていない仮定を断定でコードに埋め込まない。** `core::rules` の定数表（`config.toml` で上書きできる）に置き、
   PROGRESS.md の「未検証事項」に載せる。確かめられたら一覧から消す。
 - `Platform` のメソッドと `App::on_event` はメインスレッドで呼ぶ。OS 層のイベントはキューで直列化し、再入させない（D24）。
@@ -85,13 +91,16 @@ docs                   実機確認の手順、署名・公証の手順
 - 定数の置き場所:
   - 両 OS で揃える値は core に置く。時間の単位（`NS_PER_SEC`）は `platform.rs`、音声の形式（`OUT_RATE`・`FRAME`・`FRAME_LEN`・`DEFAULT_ASC`）は
     `audio.rs`、エンコードの制限（`SOFTWARE_MAX_LONG_SIDE`・`VIDEO_TIMESCALE`）は `session.rs` / `mp4.rs`、UI 文言は `text.rs`、
-    会議アプリの定数表（Teams のタブ名 `TEAMS_TABS` を含む）は `rules.rs`、目標値（メモリ・CPU）は `metrics.rs`。
+    会議アプリの定数表（Teams のタブ名 `TEAMS_TABS` を含む）は `rules/builtin.rs`、目標値（メモリ・CPU）は `metrics.rs`、
+    OS 層の動きを揃える間隔（`CONTROL_SEARCH_RETRY_NS`）は `platform.rs`。
   - 設定の既定値と範囲は `config.rs` が正。README の設定例はこれに揃える。
   - 1 ファイルの中でしか使わない閾値・待ち時間は、そのファイルの先頭の `const` にする。
 - 意図的な重複:
   - `platform-mac` と `platform-win` は同じ役割のファイル（`app` / `tray` / `prompt` / `probe` / `capture` / `aac` / `sys`）を別々に持つ。
     OS の API が違うので共通化しない（共通にできるのは core に置ける「判断」だけ）。
     片方にしか無いもの：mac の `toast`（OS の通知が使えないときの代わり。D29）と `panel`（`prompt` と `toast` の共通部分）。
+  - 会議アプリの部品を読む `ax`（mac）と `uia`（win）は、どちらも `ControlWatch`（見つけた部品を覚えて読み直す）を持つ。
+    流れは同じだが API がまったく違うので、別々に持つ。名前の比べ方（`rules::starts_with_ci`）と探し直しの間隔は core で揃える。
   - トレイのメニュー ID（mac の `TAG_*`、win の `ID_*`）は各 OS の中で閉じた値で、揃える必要はない。
   - `windows` と `windows-core` は同じ系列の版に揃える（`#[implement]` マクロのため）。`windows-core` だけを上げない。
   - ソフトウェアエンコードに落ちたときの fps の下げ方は OS で違う（mac は半分で下限 5、win は上限 5）。
