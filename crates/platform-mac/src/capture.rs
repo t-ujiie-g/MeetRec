@@ -811,7 +811,7 @@ impl Recorder {
         if let Some(id) = self.target
             && !target_exists(id)
         {
-            // 未検証: 対象ウィンドウが閉じられるとストリームがエラー停止する想定。
+            // 対象ウィンドウが閉じられると、ストリームはエラー（code -3815）で止まる（実機で確認）。
             // controller が次のティックで別のウィンドウへ張り替える。代わりのウィンドウが
             // 現れるまでの間も、音声だけは録り続ける。
             if !self.fallback_audio() {

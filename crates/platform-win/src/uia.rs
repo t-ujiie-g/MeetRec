@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use meetrec_core::platform::NS_PER_SEC;
+use meetrec_core::platform::CONTROL_SEARCH_RETRY_NS;
 use meetrec_core::rules::starts_with_ci;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
@@ -17,8 +17,6 @@ use windows::core::Result as WinResult;
 
 use crate::sys;
 
-/// 部品が見つからなかったあと、探し直すまでの間隔。
-const SEARCH_RETRY_NS: u64 = 10 * NS_PER_SEC;
 /// 1 ウィンドウぶんで調べる部品の上限。
 const MAX_CONTROLS: i32 = 400;
 /// 書き出す部品の種類（押せるもの・選べるものだけ。本文やチャットの文字は出さない）。
@@ -118,7 +116,7 @@ impl ControlWatch {
             self.found = None;
         } else if self
             .missed_ns
-            .is_some_and(|t| sys::qpc_ns().saturating_sub(t) < SEARCH_RETRY_NS)
+            .is_some_and(|t| sys::qpc_ns().saturating_sub(t) < CONTROL_SEARCH_RETRY_NS)
         {
             return None;
         }

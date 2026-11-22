@@ -9,6 +9,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
 
+use meetrec_core::platform::CONTROL_SEARCH_RETRY_NS;
 use meetrec_core::rules::starts_with_ci;
 
 use crate::sys;
@@ -16,8 +17,6 @@ use crate::sys;
 /// 1 アプリぶんの書き出しで調べる部品の上限（WebView の木は非常に大きくなりうる）。
 const MAX_NODES: usize = 6000;
 const MAX_DEPTH: usize = 60;
-/// 部品が見つからなかったあと、探し直すまでの間隔。
-const SEARCH_RETRY_NS: u64 = 10 * meetrec_core::platform::NS_PER_SEC;
 /// 応答しないアプリを待つ上限（秒）。
 const TIMEOUT_SECONDS: f32 = 1.0;
 /// 書き出す部品の種類（押せるもの・選べるものだけ。本文やチャットの文字は出さない）。
@@ -211,7 +210,7 @@ impl ControlWatch {
             self.found = None;
         } else if self
             .missed_ns
-            .is_some_and(|t| sys::now_ns().saturating_sub(t) < SEARCH_RETRY_NS)
+            .is_some_and(|t| sys::now_ns().saturating_sub(t) < CONTROL_SEARCH_RETRY_NS)
         {
             return None;
         }

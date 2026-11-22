@@ -451,6 +451,8 @@ pub fn run_mic(holder: Arc<Holder>, stop: Arc<AtomicBool>) {
                 .and_then(|en| mic_once(&en, &holder, &stop))
         };
         match result {
+            // 録画の停止で抜けた場合は、開き直さない（ログにも出さない）。
+            Ok(()) if stop.load(Ordering::SeqCst) => return,
             Ok(()) => meetrec_core::info!("マイクを開き直します（既定デバイスの変更）"),
             Err(e) => {
                 // 同じエラーを繰り返しログに出さない。

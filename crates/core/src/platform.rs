@@ -13,6 +13,9 @@ pub type Pid = u32;
 /// 1 秒のナノ秒数。`Platform::now_ns` と録画セッションの時計はナノ秒単位。
 pub const NS_PER_SEC: u64 = 1_000_000_000;
 
+/// `Platform::find_control` で部品が見つからなかったあと、OS 層が探し直すまでの間隔（両 OS で揃える）。
+pub const CONTROL_SEARCH_RETRY_NS: u64 = 10 * NS_PER_SEC;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProcInfo {
     pub pid: Pid,
