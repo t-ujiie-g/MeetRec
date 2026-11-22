@@ -48,7 +48,7 @@ crates/platform-win    Windows 層（Windows.Graphics.Capture / Media Foundation
 crates/app             エントリポイント（`main.rs`）と Windows のマニフェスト埋め込み（`build.rs`）
 packaging/macos        .app の組み立てと署名
 packaging/windows      インストーラ（Inno Setup の `MeetRec.iss`。CI の Windows ジョブが `MeetRec-setup.exe` を作る）
-docs                   実機確認の手順、署名・公証の手順
+docs                   実機確認の手順、署名・公証の手順、Windows の Teams の音の調査の手引き
 ```
 
 ## 守ること
