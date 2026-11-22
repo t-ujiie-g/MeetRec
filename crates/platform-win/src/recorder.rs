@@ -9,9 +9,12 @@ use std::time::{Duration, Instant};
 
 use meetrec_core::platform::{RecordRequest, RecorderEvent, RecordingSummary, WindowInfo};
 use meetrec_core::session::{Session, SessionConfig, SessionEvent};
+use windows::Win32::Foundation::HWND;
+use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromWindow};
 use windows::Win32::Media::MediaFoundation::{MF_VERSION, MFSTARTUP_FULL, MFShutdown, MFStartup};
 
 use crate::app::post_recorder_event;
+use crate::capture::Target;
 use crate::sys::QpcClock;
 use crate::video::VideoShared;
 use crate::{aac, audio, probe, video};
@@ -150,7 +153,32 @@ impl Recorder {
 
     pub fn retarget(&self, window: &WindowInfo) {
         if let Some(v) = &self.video {
-            v.retarget(window.id as isize);
+            v.retarget(Some(Target::Window(window.id as isize)));
+        }
+    }
+
+    /// 映像を、`near` のウィンドウがあるモニター全体に切り替える（自分の画面共有中）。
+    /// モニターを特定できない・映像を録っていない場合は false（共有していない画面を録らない）。
+    /// 音声はプロセス単位で録っているので変わらない。
+    pub fn show_screen(&self, near: &WindowInfo) -> bool {
+        let Some(v) = &self.video else {
+            return false;
+        };
+        // SAFETY: HWND を渡すだけ。無効なら NULL が返る。
+        let monitor =
+            unsafe { MonitorFromWindow(HWND(near.id as usize as *mut _), MONITOR_DEFAULTTONULL) };
+        if monitor.is_invalid() {
+            meetrec_core::warn!("共有しているモニターを特定できません");
+            return false;
+        }
+        v.retarget(Some(Target::Monitor(monitor.0 as isize)));
+        true
+    }
+
+    /// 画面の録画をやめる（張り替え先のウィンドウがないとき）。
+    pub fn hide_screen(&self) {
+        if let Some(v) = &self.video {
+            v.retarget(None);
         }
     }
 

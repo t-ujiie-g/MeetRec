@@ -15,6 +15,7 @@ use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
 use windows::Win32::Foundation::{E_FAIL, HWND};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+use windows::Win32::Graphics::Gdi::HMONITOR;
 use windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess;
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::core::{Interface, Result as WinResult, factory};
@@ -80,6 +81,15 @@ impl FrameQueue {
     }
 }
 
+/// 取り込む対象。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// ウィンドウ 1 つ（HWND）。
+    Window(isize),
+    /// モニター全体（HMONITOR）。自分の画面共有中に使う。
+    Monitor(isize),
+}
+
 pub struct Capture {
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
@@ -96,7 +106,7 @@ fn clamp_size(size: SizeInt32) -> SizeInt32 {
 
 impl Capture {
     pub fn start(
-        hwnd: isize,
+        target: Target,
         device: &IDirect3DDevice,
         show_cursor: bool,
         fps: u32,
@@ -106,7 +116,15 @@ impl Capture {
             return Err(E_FAIL.into());
         }
         let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
-        let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(HWND(hwnd as *mut _))? };
+        // SAFETY: ハンドルは OS から得た値。無効になっていれば呼び出しがエラーを返す。
+        let item: GraphicsCaptureItem = unsafe {
+            match target {
+                Target::Window(hwnd) => interop.CreateForWindow(HWND(hwnd as *mut _))?,
+                Target::Monitor(monitor) => {
+                    interop.CreateForMonitor(HMONITOR(monitor as *mut _))?
+                }
+            }
+        };
         let size = clamp_size(item.Size()?);
         let format = DirectXPixelFormat::B8G8R8A8UIntNormalized;
         let pool =
@@ -154,7 +172,7 @@ impl Capture {
         let _ = session.SetIsBorderRequired(false);
         // ウィンドウが閉じられた場合は core が次のティックで張り替えを指示する。
         let _ = item.Closed(&TypedEventHandler::new(|_, _| {
-            meetrec_core::info!("キャプチャ対象のウィンドウが閉じられました");
+            meetrec_core::info!("キャプチャ対象（ウィンドウまたはモニター）がなくなりました");
             Ok(())
         }));
         session.StartCapture()?;

@@ -20,7 +20,7 @@ use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDev
 use windows::core::{Interface, Result as WinResult};
 
 use crate::app::post_recorder_event;
-use crate::capture::{Capture, FrameQueue};
+use crate::capture::{Capture, FrameQueue, Target};
 use crate::convert::Converter;
 use crate::h264enc::{Config, H264Encoder};
 use crate::recorder::Holder;
@@ -42,7 +42,8 @@ pub struct Params {
 pub struct VideoShared {
     stop: Arc<AtomicBool>,
     queue: Arc<FrameQueue>,
-    retarget: Mutex<Option<isize>>,
+    /// 映像スレッドへの切り替え指示。`Some(None)` は「取り込みをやめる」。
+    retarget: Mutex<Option<Option<Target>>>,
     info: Mutex<String>,
 }
 
@@ -56,9 +57,10 @@ impl VideoShared {
         }
     }
 
-    /// 録画対象を別のウィンドウに張り替える（映像スレッドが処理する）。
-    pub fn retarget(&self, hwnd: isize) {
-        *self.retarget.lock().unwrap() = Some(hwnd);
+    /// 取り込む対象を切り替える（映像スレッドが処理する）。`None` なら取り込みをやめ、
+    /// 次の指示まで映像は最後のフレームのまま止まる。
+    pub fn retarget(&self, target: Option<Target>) {
+        *self.retarget.lock().unwrap() = Some(target);
         self.wake();
     }
 
@@ -158,7 +160,7 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
         let winrt_device: IDirect3DDevice =
             CreateDirect3D11DeviceFromDXGIDevice(&device.cast::<IDXGIDevice>()?)?.cast()?;
         let mut capture = Some(Capture::start(
-            params.hwnd,
+            Target::Window(params.hwnd),
             &winrt_device,
             s.show_cursor,
             fps,
@@ -196,22 +198,27 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
                 break;
             }
             let new_target = shared.retarget.lock().unwrap().take();
-            if let Some(hwnd) = new_target {
-                // 先に古いキャプチャを閉じてから新しいウィンドウで作り直す（エンコーダは継続）。
+            if let Some(target) = new_target {
+                // 先に古いキャプチャを閉じてから新しい対象で作り直す（エンコーダは継続）。
                 capture = None;
                 shared.queue.clear();
-                match Capture::start(
-                    hwnd,
-                    &winrt_device,
-                    s.show_cursor,
-                    fps,
-                    shared.queue.clone(),
-                ) {
-                    Ok(c) => {
-                        meetrec_core::info!("キャプチャ対象を張り替えました: window={hwnd:#x}");
-                        capture = Some(c);
-                    }
-                    Err(e) => meetrec_core::warn!("張り替え先をキャプチャできません: {e}"),
+                match target {
+                    None => meetrec_core::info!("映像の取り込みを止めました"),
+                    Some(target) => match Capture::start(
+                        target,
+                        &winrt_device,
+                        s.show_cursor,
+                        fps,
+                        shared.queue.clone(),
+                    ) {
+                        Ok(c) => {
+                            meetrec_core::info!("キャプチャ対象を張り替えました: {target:x?}");
+                            capture = Some(c);
+                        }
+                        Err(e) => {
+                            meetrec_core::warn!("張り替え先をキャプチャできません: {target:x?} {e}")
+                        }
+                    },
                 }
             }
 
