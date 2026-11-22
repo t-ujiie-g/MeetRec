@@ -72,6 +72,20 @@ jobs:
           echo "binary size: $SIZE bytes"
           test "$SIZE" -lt 20971520
 
+      # インストーラ（Inno Setup）。ランナーに入っていなければ、版を固定して入れる。
+      - name: Installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --version=6.2.2 --no-progress -y
+          }
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches.Groups[1].Value
+          & $iscc "/DAppVersion=$version" packaging\windows\MeetRec.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item dist\MeetRec-setup.exe | Format-List Name, Length
+
       - uses: actions/upload-artifact@v7
         if: runner.os == 'macOS'
         with:
@@ -83,5 +97,7 @@ jobs:
         if: runner.os == 'Windows'
         with:
           name: MeetRec-windows
-          path: dist/MeetRec.exe
+          path: |
+            dist/MeetRec-setup.exe
+            dist/MeetRec.exe
           if-no-files-found: error
