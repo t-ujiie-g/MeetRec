@@ -1206,7 +1206,9 @@ mod tests {
             self.calls.push(format!("mic {enabled}"));
         }
         fn find_control(&mut self, _: Pid, names: &[String]) -> Option<String> {
-            self.control.clone().filter(|c| names.contains(c))
+            self.control
+                .clone()
+                .filter(|c| names.iter().any(|n| crate::rules::starts_with_ci(c, n)))
         }
         fn stop_recording(&mut self) -> Option<RecordingSummary> {
             let req = self.recording.take()?;

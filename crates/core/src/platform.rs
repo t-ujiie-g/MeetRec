@@ -214,8 +214,8 @@ pub trait Platform {
     fn retarget_screen(&mut self, near: &WindowInfo) -> bool;
     /// 画面の録画をやめる（張り替え先のウィンドウがないとき。映像は止まり、音声は続く）。
     fn end_screen(&mut self);
-    /// 会議アプリ（`pid`）の画面部品（ボタン・メニュー項目）のうち、名前が `names` のどれかと完全一致
-    /// （大文字小文字無視）するものを探し、その名前を返す。見つからない・読めない（許可がない、
+    /// 会議アプリ（`pid`）の画面部品（ボタン・メニュー項目）のうち、名前が `names` のどれかで始まる
+    /// （大文字小文字無視。`rules::starts_with_ci`）ものを探し、その名前を返す。見つからない・読めない（許可がない、
     /// 未対応）場合は None。2 秒ごとに呼ばれるので、OS 層は見つけた部品を覚えて軽く済ませること。
     fn find_control(&mut self, pid: Pid, names: &[String]) -> Option<String>;
     /// 録画中に、自分のマイクを録る・録らないを切り替える（録らない間は無音になる）。
