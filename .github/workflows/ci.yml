@@ -23,7 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt,clippy && rustup default 1.100.0
+      # 版・コンポーネント・ターゲットは rust-toolchain.toml に従う。
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -37,7 +38,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt,clippy && rustup default 1.100.0
+      # 版・コンポーネント・ターゲットは rust-toolchain.toml に従う。
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -46,7 +48,6 @@ jobs:
       - name: Build (macOS universal)
         if: runner.os == 'macOS'
         run: |
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
           cargo build --release -p meetrec --target aarch64-apple-darwin
           cargo build --release -p meetrec --target x86_64-apple-darwin
           mkdir -p dist

@@ -159,9 +159,4 @@
   新しいセッションでも、プッシュ後に毎回 3 ジョブ（core / macos / windows）の結果を確認し、赤なら直すこと。
 
 ## 開発コマンド
-```sh
-cargo test --workspace                                   # Linux で core のテスト
-cargo clippy --workspace --all-targets -- -D warnings
-cargo check -p meetrec --target aarch64-apple-darwin     # macOS 向け型検査（Linux 上で可）
-cargo check -p meetrec --target x86_64-pc-windows-msvc   # Windows 向け型検査（Linux 上で可）
-```
+[AGENTS.md](AGENTS.md) の「コマンド」を参照。

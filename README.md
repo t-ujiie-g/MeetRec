@@ -167,22 +167,7 @@ keep_score = 30                  # この点以上のウィンドウがなくな
 
 ## 開発
 
-```sh
-cargo test --workspace                                   # OS 非依存ロジックのテスト（Linux でも実行可）
-cargo clippy --workspace --all-targets -- -D warnings
-cargo check -p meetrec --target aarch64-apple-darwin     # macOS 向けコードの型検査（Linux 上で可）
-cargo check -p meetrec --target x86_64-pc-windows-msvc   # Windows 向けコードの型検査（Linux 上で可）
-cargo build --release -p meetrec                         # 各 OS 上でのビルド
-packaging/macos/bundle.sh target/release/meetrec dist    # macOS: .app 化と ad-hoc 署名
-```
-
-| クレート | 役割 |
-|---|---|
-| `crates/core` | 検出の状態機械、会議アプリ定数表、全体制御、fMP4 muxer と修復、音声ミキサ、設定、保存（OS 非依存・テスト可能） |
-| `crates/platform-mac` | ScreenCaptureKit / VideoToolbox / AudioToolbox / CoreAudio / AppKit |
-| `crates/platform-win` | Windows.Graphics.Capture / Media Foundation / WASAPI / Win32 |
-| `crates/app` | エントリポイント |
-
+- ビルド・テストのコマンド、構成、守ること：[AGENTS.md](AGENTS.md)
 - 設計判断：[DECISIONS.md](DECISIONS.md)
 - 進捗と未検証事項：[PROGRESS.md](PROGRESS.md)
 - 実機確認の手順：[docs/manual-test.md](docs/manual-test.md)
