@@ -11,10 +11,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::audio::{Mixer, MixerStats, FRAME, OUT_RATE};
+use crate::audio::{Mixer, MixerStats, FRAME, FRAME_LEN, OUT_RATE};
 use crate::h264;
 use crate::mp4::{self, FragWriter, TrackKind, TrackSpec, VIDEO_TIMESCALE};
-use crate::platform::RecordingSummary;
+use crate::platform::{RecordingSummary, NS_PER_SEC};
 use crate::storage;
 
 pub const SRC_APP: usize = 0;
@@ -242,7 +242,7 @@ impl Shared {
         avcc: &[u8],
     ) {
         let rel = pts_ns.saturating_sub(self.t0);
-        let pts = (rel as u128 * VIDEO_TIMESCALE as u128 / 1_000_000_000) as u64;
+        let pts = (rel as u128 * VIDEO_TIMESCALE as u128 / NS_PER_SEC as u128) as u64;
         let mut mux = self.mux.lock().unwrap();
         if mux.video_off || mux.failed {
             return;
@@ -393,13 +393,13 @@ impl Ticker {
                     frames.extend_from_slice(&per[SRC_MIC]);
                 }
             });
-        let per_frame = FRAME * 2 * if n_enc >= 3 { 3 } else { 1 };
+        let per_frame = FRAME_LEN * if n_enc >= 3 { 3 } else { 1 };
         let count = self.frames.len() / per_frame;
         for i in 0..count {
             let base = i * per_frame;
             for track in 0..n_enc.min(3) {
-                let at = base + track * FRAME * 2;
-                self.encode(track, at..at + FRAME * 2);
+                let at = base + track * FRAME_LEN;
+                self.encode(track, at..at + FRAME_LEN);
             }
         }
         if stopping {
@@ -621,7 +621,7 @@ impl FrameGate {
     pub fn new(fps: u32) -> FrameGate {
         // 配信タイミングの揺れで本来のフレームを落とさないよう 10% の余裕を持たせる。
         FrameGate {
-            min_interval_ns: 900_000_000 / fps.max(1) as u64,
+            min_interval_ns: NS_PER_SEC * 9 / 10 / fps.max(1) as u64,
             last: None,
         }
     }
@@ -636,6 +636,9 @@ impl FrameGate {
         }
     }
 }
+
+/// ソフトウェアエンコードにフォールバックしたときの解像度上限（長辺）。両 OS で揃える（DECISIONS D23）。
+pub const SOFTWARE_MAX_LONG_SIDE: u32 = 1280;
 
 /// 出力キャンバス（エンコード解像度）を決める。長辺を `max_long` 以下に縮小し、偶数に丸める。
 /// 小さいウィンドウ（ミニウィンドウ等）から始まった場合は、後で大きなウィンドウに
@@ -693,10 +696,10 @@ mod tests {
     struct FakeAac;
     impl AacEncoder for FakeAac {
         fn asc(&self) -> Vec<u8> {
-            vec![0x11, 0x90]
+            crate::audio::DEFAULT_ASC.to_vec()
         }
         fn encode(&mut self, pcm: &[f32]) -> Result<Vec<Vec<u8>>, String> {
-            assert_eq!(pcm.len(), FRAME * 2);
+            assert_eq!(pcm.len(), FRAME_LEN);
             Ok(vec![vec![0x21; 64]])
         }
         fn finish(&mut self) -> Vec<Vec<u8>> {

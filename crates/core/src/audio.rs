@@ -6,17 +6,22 @@
 //!   追従し（クロックドリフト対策）、100ms を超えたら位置を合わせ直す（切替・欠落対策）。
 //! - バッファは固定長（ソースごと約 3 秒）。あふれた分は捨て、メモリは増えない。
 
+use crate::platform::NS_PER_SEC;
+
 pub const OUT_RATE: u32 = 48_000;
 pub const FRAME: usize = 1024;
 /// 1 フレームの interleaved ステレオ float の長さ。
 pub const FRAME_LEN: usize = FRAME * 2;
+/// AAC-LC 48kHz ステレオの AudioSpecificConfig。OS のエンコーダから取得できないときの既定値で、
+/// `OUT_RATE` とチャンネル数（2）に対応する。
+pub const DEFAULT_ASC: [u8; 2] = [0x11, 0x90];
 
 const CAP: usize = OUT_RATE as usize * 3;
 const HARD_RESYNC: f64 = OUT_RATE as f64 * 0.1;
 const MAX_ADJ: f64 = 0.005;
 
 fn pos_of(ns: u64) -> u64 {
-    (ns as u128 * OUT_RATE as u128 / 1_000_000_000) as u64
+    (ns as u128 * OUT_RATE as u128 / NS_PER_SEC as u128) as u64
 }
 
 struct Source {
@@ -199,10 +204,6 @@ impl Mixer {
             done += 1;
             f(&mix, &per);
         }
-    }
-
-    pub fn emitted_samples(&self) -> u64 {
-        self.emitted
     }
 }
 

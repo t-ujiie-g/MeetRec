@@ -1,6 +1,6 @@
 //! Microsoft AAC エンコーダ MFT（同期 MFT）による `AacEncoder` 実装。
 
-use meetrec_core::audio::{FRAME, OUT_RATE};
+use meetrec_core::audio::{DEFAULT_ASC, FRAME_LEN, OUT_RATE};
 use meetrec_core::session::AacEncoder;
 use windows::core::Result as WinResult;
 use windows::Win32::Media::MediaFoundation::{
@@ -72,7 +72,7 @@ impl MfAac {
         mft.SetOutputType(0, &aac_type(bytes)?, 0)?;
 
         // AudioSpecificConfig は確定した出力タイプの MF_MT_USER_DATA の末尾にある。
-        let mut asc = vec![0x11, 0x90]; // AAC-LC 48kHz ステレオ
+        let mut asc = DEFAULT_ASC.to_vec();
         if let Ok(out) = mft.GetOutputCurrentType(0) {
             if let Ok(size) = out.GetBlobSize(&MF_MT_USER_DATA) {
                 let mut blob = vec![0u8; size as usize];
@@ -160,7 +160,7 @@ impl AacEncoder for MfAac {
     }
 
     fn encode(&mut self, pcm: &[f32]) -> Result<Vec<Vec<u8>>, String> {
-        debug_assert_eq!(pcm.len(), FRAME * 2);
+        debug_assert_eq!(pcm.len(), FRAME_LEN);
         let mut out = Vec::new();
         unsafe {
             let sample = self.input_sample(pcm).map_err(|e| e.to_string())?;

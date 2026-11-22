@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use meetrec_core::platform::NS_PER_SEC;
 use meetrec_core::session::{SRC_APP, SRC_MIC};
 use windows::core::{implement, Interface, Ref, Result as WinResult, GUID, HRESULT};
 use windows::Win32::Foundation::E_FAIL;
@@ -138,10 +139,9 @@ unsafe fn capture_loop(
                     let mut pts = qpc.wrapping_mul(100);
                     if qpc == 0
                         || flags & BUFFERFLAGS_TIMESTAMP_ERROR != 0
-                        || pts.abs_diff(now) > 1_000_000_000
+                        || pts.abs_diff(now) > NS_PER_SEC
                     {
-                        pts =
-                            now.saturating_sub(frames as u64 * 1_000_000_000 / format.rate as u64);
+                        pts = now.saturating_sub(frames as u64 * NS_PER_SEC / format.rate as u64);
                     }
                     holder.with(|s| s.push_pcm(source, pts, format.rate, format.channels, &pcm));
                 }

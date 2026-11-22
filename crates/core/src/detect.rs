@@ -7,10 +7,8 @@
 //!       一時的な切断・再接続では (a)(b) のタイマーがリセットされるので分断しない。
 
 use crate::config::DetectConfig;
-use crate::platform::Pid;
+use crate::platform::{Pid, NS_PER_SEC as NS};
 use crate::rules::{Observation, Rules};
-
-const NS: u64 = 1_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectEvent {
@@ -55,13 +53,6 @@ impl Detector {
     pub fn active_app(&self) -> Option<usize> {
         match self.phase {
             Phase::Active { app, .. } => Some(app),
-            _ => None,
-        }
-    }
-
-    pub fn active_root(&self) -> Option<Pid> {
-        match self.phase {
-            Phase::Active { root_pid, .. } => Some(root_pid),
             _ => None,
         }
     }

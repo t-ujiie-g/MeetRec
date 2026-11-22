@@ -300,14 +300,6 @@ impl<W: Write + Seek> FragWriter<W> {
         self.pos
     }
 
-    /// 現フラグメントに溜まっているバイト数（メモリ上限の監視用）。
-    pub fn buffered_bytes(&self) -> usize {
-        self.tracks
-            .iter()
-            .map(|t| t.data.len() + t.pending.as_ref().map_or(0, |p| p.data.len()))
-            .sum()
-    }
-
     fn patch_u32(&mut self, at: u64, value: u32) -> io::Result<()> {
         self.w.seek(SeekFrom::Start(at))?;
         self.w.write_all(&value.to_be_bytes())?;
@@ -810,7 +802,7 @@ pub(crate) mod tests {
             kind: TrackKind::Audio {
                 sample_rate: 48_000,
                 channels: 2,
-                asc: vec![0x11, 0x90],
+                asc: crate::audio::DEFAULT_ASC.to_vec(),
                 bitrate: 96_000,
             },
             timescale: 48_000,

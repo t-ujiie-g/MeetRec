@@ -14,8 +14,8 @@ use meetrec_core::platform::{
 use meetrec_core::text;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    GetLastError, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, FILETIME, HINSTANCE, HWND, LPARAM, LRESULT,
-    WPARAM,
+    GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, FILETIME, HINSTANCE,
+    HWND, LPARAM, LRESULT, WPARAM,
 };
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
@@ -32,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, KillTimer,
     MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
     SetCoalescableTimer, TranslateMessage, IDYES, MB_ICONINFORMATION, MB_SETFOREGROUND, MB_YESNO,
-    MSG, PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SW_SHOWNORMAL, WINDOW_EX_STYLE, WM_APP,
+    MSG, PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SW_SHOWNORMAL, WINDOW_EX_STYLE, WM_APP, WM_CLOSE,
     WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WM_POWERBROADCAST, WM_QUERYENDSESSION, WM_TIMER,
     WNDCLASSEXW, WS_OVERLAPPED,
 };
@@ -201,10 +201,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             LRESULT(0)
         }
-        windows::Win32::UI::WindowsAndMessaging::WM_CLOSE => {
+        WM_CLOSE => {
             // taskkill（/F なし）やインストーラ等からの終了要求：録画を確定してから閉じる。
             dispatch(UiEvent::Shutdown);
-            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
+            let _ = DestroyWindow(hwnd);
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -448,7 +448,7 @@ impl Platform for WinPlatform {
             } else {
                 let e = RegDeleteValueW(key, RUN_VALUE);
                 // もともと無い場合は成功扱い。
-                if e.0 == 2 {
+                if e == ERROR_FILE_NOT_FOUND {
                     ERROR_SUCCESS
                 } else {
                     e

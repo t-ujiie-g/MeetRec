@@ -11,13 +11,12 @@ use crate::detect::{DetectEvent, Detector};
 use crate::metrics::Metrics;
 use crate::platform::{
     App, MenuAction, Notice, Permissions, Pid, Platform, PromptAnswer, PromptModel, RecordRequest,
-    RecorderEvent, TrayModel, UiEvent,
+    RecorderEvent, TrayModel, UiEvent, NS_PER_SEC as NS,
 };
 use crate::rules::{Observation, Rules};
 use crate::storage::{self, Dirs, RecoveryOutcome};
 use crate::text;
 
-const NS: u64 = 1_000_000_000;
 /// より良いウィンドウが現れてから張り替えるまでの安定待ち。
 const RETARGET_HOLD_NS: u64 = 2 * NS;
 const DISK_CHECK_NS: u64 = 10 * NS;
@@ -100,16 +99,17 @@ impl Controller {
         }
     }
 
-    pub fn config(&self) -> &Config {
-        &self.cfg
-    }
-
     pub fn is_recording(&self) -> bool {
         self.rec.is_some()
     }
 
     fn output_dir(&self) -> PathBuf {
         self.cfg.output_dir(&self.dirs.default_output)
+    }
+
+    /// 録画を続けるのに必要な空き容量（バイト）。
+    fn min_free_bytes(&self) -> u64 {
+        self.cfg.storage.min_free_mb.saturating_mul(1 << 20)
     }
 
     fn save_config(&self) {
@@ -229,12 +229,7 @@ impl Controller {
         if let Some(m) = self.meeting {
             if m.decision == Decision::ResumeAfterWake && self.rec.is_none() {
                 crate::info!("スリープ復帰後も会議が続いているため録画を再開します");
-                let ok = self.start(p, m.app, m.root_pid, false, &obs);
-                self.set_decision(if ok {
-                    Decision::Accepted
-                } else {
-                    Decision::Declined
-                });
+                self.start_for_meeting(p, m, &obs);
             }
         }
         self.follow(p, &obs, now);
@@ -246,6 +241,16 @@ impl Controller {
         if let Some(m) = self.meeting.as_mut() {
             m.decision = d;
         }
+    }
+
+    /// 検出済みの会議の録画を開始し、成否を判断として記録する（失敗した会議では再試行しない）。
+    fn start_for_meeting(&mut self, p: &mut dyn Platform, m: Meeting, obs: &Observation) {
+        let ok = self.start(p, m.app, m.root_pid, false, obs);
+        self.set_decision(if ok {
+            Decision::Accepted
+        } else {
+            Decision::Declined
+        });
     }
 
     fn meeting_started(
@@ -372,7 +377,7 @@ impl Controller {
         }
         if now.saturating_sub(self.last_disk_ns) >= DISK_CHECK_NS {
             self.last_disk_ns = now;
-            let min = self.cfg.storage.min_free_mb << 20;
+            let min = self.min_free_bytes();
             if p.free_space(&self.output_dir())
                 .is_some_and(|free| free < min)
             {
@@ -457,8 +462,9 @@ impl Controller {
             self.notify(p, format!("{}: {e}", text::NOTICE_START_FAILED), None);
             return false;
         }
-        let min = self.cfg.storage.min_free_mb << 20;
-        if p.free_space(&dir).is_some_and(|free| free < min) {
+        if p.free_space(&dir)
+            .is_some_and(|free| free < self.min_free_bytes())
+        {
             self.notify(p, text::NOTICE_DISK_LOW_START, None);
             return false;
         }
@@ -584,12 +590,7 @@ impl Controller {
             (Mode::Auto, Decision::Pending | Decision::Ignored) => {
                 self.hide_prompt(p);
                 let obs = self.observe(p, true);
-                let ok = self.start(p, m.app, m.root_pid, false, &obs);
-                self.set_decision(if ok {
-                    Decision::Accepted
-                } else {
-                    Decision::Declined
-                });
+                self.start_for_meeting(p, m, &obs);
             }
             (Mode::Off, Decision::Pending) => {
                 self.hide_prompt(p);
@@ -621,12 +622,7 @@ impl Controller {
                     self.save_config();
                 }
                 let obs = self.observe(p, true);
-                let ok = self.start(p, m.app, m.root_pid, false, &obs);
-                self.set_decision(if ok {
-                    Decision::Accepted
-                } else {
-                    Decision::Declined
-                });
+                self.start_for_meeting(p, m, &obs);
             }
         }
     }
@@ -1118,7 +1114,7 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(h.c.config().mode, Mode::Ask);
+        assert_eq!(h.c.cfg.mode, Mode::Ask);
         let req = h.p.recording.clone().unwrap();
         assert_eq!(req.root_pid, 7);
         assert_eq!(req.window.unwrap().id, 1);
@@ -1175,7 +1171,7 @@ mod tests {
         h.ticks(3);
         h.ev(UiEvent::Prompt(PromptAnswer::Record { always: true }));
         assert!(h.c.is_recording());
-        assert_eq!(h.c.config().mode, Mode::Auto);
+        assert_eq!(h.c.cfg.mode, Mode::Auto);
         let (saved, _) = Config::load(&h.dirs.config_file());
         assert_eq!(saved.mode, Mode::Auto);
     }

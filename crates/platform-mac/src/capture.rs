@@ -17,11 +17,11 @@ use std::time::Duration;
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchRetained};
 use meetrec_core::platform::{
-    RecordRequest, RecordSettings, RecorderEvent, RecordingSummary, WindowInfo,
+    RecordRequest, RecordSettings, RecorderEvent, RecordingSummary, WindowInfo, NS_PER_SEC,
 };
 use meetrec_core::session::{
-    canvas_size, AacEncoder, Clock, FrameGate, Session, SessionConfig, SessionEvent, SRC_APP,
-    SRC_MIC,
+    canvas_size, AacEncoder, Clock, FrameGate, Session, SessionConfig, SessionEvent,
+    SOFTWARE_MAX_LONG_SIDE, SRC_APP, SRC_MIC,
 };
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
@@ -31,9 +31,7 @@ use objc2_core_audio_types::{
     kAudioFormatLinearPCM, AudioBuffer, AudioBufferList,
 };
 use objc2_core_foundation::{CFDictionary, CFNumber};
-use objc2_core_media::{
-    CMAudioFormatDescriptionGetStreamBasicDescription, CMSampleBuffer, CMTime, CMTimeFlags,
-};
+use objc2_core_media::{CMAudioFormatDescriptionGetStreamBasicDescription, CMSampleBuffer};
 use objc2_core_video::kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
 use objc2_foundation::{NSArray, NSError};
 use objc2_screen_capture_kit::{
@@ -43,13 +41,13 @@ use objc2_screen_capture_kit::{
 
 use crate::aac::MacAac;
 use crate::app::{self, Item};
-use crate::encoder::{cmtime_ns, ClockOffset, VideoEncoder};
+use crate::encoder::{cmtime, cmtime_ns, ClockOffset, VideoEncoder};
 use crate::sys;
 
 /// 非同期 API の完了を待つ上限。
 const WAIT: Duration = Duration::from_secs(3);
-/// ソフトウェアエンコード時の解像度上限（長辺）。
-const SOFTWARE_MAX_LONG: u32 = 1280;
+/// 対象が残っているのにストリームが止まったとき、作り直しを試みる最短間隔。
+const RESTART_MIN_INTERVAL_NS: u64 = 30 * NS_PER_SEC;
 
 struct MacClock;
 impl Clock for MacClock {
@@ -100,6 +98,12 @@ fn shareable_content() -> Result<Retained<SCShareableContent>, String> {
 fn find_window(content: &SCShareableContent, id: u64) -> Option<Retained<SCWindow>> {
     // SAFETY: 取得済みの不変オブジェクトを読むだけ。
     unsafe { content.windows().iter().find(|w| w.windowID() as u64 == id) }
+}
+
+/// 1 つのウィンドウだけを（他のウィンドウに隠れていても）録るフィルタ。
+fn window_filter(window: &SCWindow) -> Retained<SCContentFilter> {
+    // SAFETY: 取得済みの SCWindow からフィルタを作る。
+    unsafe { SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), window) }
 }
 
 /// 完了ハンドラ（エラーのみ）を待つ。
@@ -405,11 +409,9 @@ impl Recorder {
         let mut encoder = None;
         let filter = match &window {
             Some(w) => {
-                // SAFETY: 取得済みの SCWindow からフィルタを作る。
-                let filter = unsafe {
-                    SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), w)
-                };
+                let filter = window_filter(w);
                 // ウィンドウの実ピクセル数（Retina では point の 2 倍）からキャンバスを決める。
+                // SAFETY: 作成済みのフィルタのプロパティを読むだけ。
                 let (pw, ph) = unsafe {
                     let rect = filter.contentRect();
                     let scale = filter.pointPixelScale().max(1.0) as f64;
@@ -439,7 +441,7 @@ impl Recorder {
                         let canvas = canvas_size(
                             pw.max(2),
                             ph.max(2),
-                            s.max_long_side.min(SOFTWARE_MAX_LONG),
+                            s.max_long_side.min(SOFTWARE_MAX_LONG_SIDE),
                         );
                         let fps = (s.fps / 2).max(5).min(s.fps);
                         match VideoEncoder::create(
@@ -522,21 +524,11 @@ impl Recorder {
                 // 映像は使わない。最小サイズ・最低頻度にして負荷を抑える。
                 c.setWidth(2);
                 c.setHeight(2);
-                c.setMinimumFrameInterval(CMTime {
-                    value: 1,
-                    timescale: 1,
-                    flags: CMTimeFlags(1),
-                    epoch: 0,
-                });
+                c.setMinimumFrameInterval(cmtime(1, 1));
             } else {
                 c.setWidth(self.canvas.0 as usize);
                 c.setHeight(self.canvas.1 as usize);
-                c.setMinimumFrameInterval(CMTime {
-                    value: 1,
-                    timescale: self.fps.max(1) as i32,
-                    flags: CMTimeFlags(1),
-                    epoch: 0,
-                });
+                c.setMinimumFrameInterval(cmtime(1, self.fps.max(1) as i32));
                 c.setPixelFormat(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
                 c.setScalesToFit(true);
                 c.setShowsCursor(self.settings.show_cursor);
@@ -622,10 +614,7 @@ impl Recorder {
         let result = shareable_content().and_then(|content| {
             let w =
                 find_window(&content, window.id).ok_or("ウィンドウが共有可能一覧にありません")?;
-            // SAFETY: 取得済みの SCWindow からフィルタを作る。
-            let filter = unsafe {
-                SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), &w)
-            };
+            let filter = window_filter(&w);
             let running = self.stream.is_some() && !self.stopped.load(Ordering::SeqCst);
             match &self.stream {
                 Some(stream) if running && self.stream_video => {
@@ -680,9 +669,11 @@ impl Recorder {
                 return Some(true);
             }
         }
-        // 対象が残っているのに止まった：30 秒に 1 回までは作り直しを試みる。
+        // 対象が残っているのに止まった：作り直しを試みる（頻度は制限する）。
         let now = sys::now_ns();
-        if self.last_restart_ns != 0 && now.saturating_sub(self.last_restart_ns) < 30_000_000_000 {
+        if self.last_restart_ns != 0
+            && now.saturating_sub(self.last_restart_ns) < RESTART_MIN_INTERVAL_NS
+        {
             return Some(false);
         }
         self.last_restart_ns = now.max(1);
@@ -691,13 +682,7 @@ impl Recorder {
                 Some(id) => {
                     let w =
                         find_window(&content, id).ok_or("ウィンドウが共有可能一覧にありません")?;
-                    // SAFETY: 取得済みの SCWindow からフィルタを作る。
-                    unsafe {
-                        SCContentFilter::initWithDesktopIndependentWindow(
-                            SCContentFilter::alloc(),
-                            &w,
-                        )
-                    }
+                    window_filter(&w)
                 }
                 None => app_audio_filter(&content, self.root_pid)?,
             };

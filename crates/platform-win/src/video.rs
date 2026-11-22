@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use meetrec_core::platform::RecordSettings;
-use meetrec_core::session::canvas_size;
+use meetrec_core::session::{canvas_size, SOFTWARE_MAX_LONG_SIDE};
 use windows::core::{Interface, Result as WinResult};
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Win32::Foundation::{E_FAIL, HMODULE};
@@ -132,7 +132,11 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
         Ok(e) => e,
         Err(e) => {
             // ソフトウェアエンコード時は負荷を抑えるため fps と解像度を下げる。
-            canvas = canvas_size(params.size.0, params.size.1, s.max_long_side.min(1280));
+            canvas = canvas_size(
+                params.size.0,
+                params.size.1,
+                s.max_long_side.min(SOFTWARE_MAX_LONG_SIDE),
+            );
             fps = fps.min(5);
             meetrec_core::warn!(
                 "ハードウェア H.264 エンコーダを使えません（{e}）。ソフトウェアで {}x{} {fps}fps に下げます",

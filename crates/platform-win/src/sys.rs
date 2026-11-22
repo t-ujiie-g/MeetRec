@@ -2,6 +2,7 @@
 
 use std::sync::OnceLock;
 
+use meetrec_core::platform::NS_PER_SEC;
 use meetrec_core::session::Clock;
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -59,7 +60,7 @@ pub fn qpc_ns() -> u64 {
     unsafe {
         let _ = QueryPerformanceCounter(&mut c);
     }
-    (c as u128 * 1_000_000_000u128 / qpc_freq() as u128) as u64
+    (c as u128 * NS_PER_SEC as u128 / qpc_freq() as u128) as u64
 }
 
 pub struct QpcClock;

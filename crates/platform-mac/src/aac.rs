@@ -5,7 +5,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::NonNull;
 
-use meetrec_core::audio::{FRAME, FRAME_LEN, OUT_RATE};
+use meetrec_core::audio::{DEFAULT_ASC, FRAME, FRAME_LEN, OUT_RATE};
 use meetrec_core::session::AacEncoder;
 use objc2_audio_toolbox::{
     kAudioConverterCompressionMagicCookie, kAudioConverterEncodeBitRate,
@@ -132,7 +132,7 @@ impl MacAac {
         }
         let mut this = MacAac {
             conv,
-            asc: vec![0x11, 0x90],
+            asc: DEFAULT_ASC.to_vec(),
             pcm: vec![0.0; FRAME_LEN],
             out: Vec::new(),
         };
