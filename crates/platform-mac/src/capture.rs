@@ -106,8 +106,9 @@ fn window_filter(window: &SCWindow) -> Retained<SCContentFilter> {
     unsafe { SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), window) }
 }
 
-/// ディスプレイ全体を録るフィルタ（自分の画面共有中）。`near` のウィンドウがあるディスプレイを選び、
-/// 見つからなければ最初のディスプレイにする。MeetRec 自身のパネルは映さない。
+/// ディスプレイ全体を録るフィルタ（自分の画面共有中）。`near` のウィンドウがあるディスプレイを選ぶ。
+/// どのディスプレイか決められないときは失敗にする（共有していない画面を録らないため。呼び出し側は
+/// ウィンドウの録画を続ける）。MeetRec 自身のパネルは映さない。
 fn display_filter(
     content: &SCShareableContent,
     near: u64,
@@ -115,25 +116,23 @@ fn display_filter(
     // SAFETY: 取得済みの不変オブジェクトを読むだけ。
     unsafe {
         let displays = content.displays();
-        let center = find_window(content, near).map(|w| {
-            let f = w.frame();
-            (
-                f.origin.x + f.size.width / 2.0,
-                f.origin.y + f.size.height / 2.0,
-            )
-        });
-        let display = center
-            .and_then(|(x, y)| {
-                displays.iter().find(|d| {
-                    let f = d.frame();
-                    x >= f.origin.x
-                        && x < f.origin.x + f.size.width
-                        && y >= f.origin.y
-                        && y < f.origin.y + f.size.height
-                })
+        let mark = find_window(content, near)
+            .ok_or("共有の目印のウィンドウが共有可能一覧にありません")?
+            .frame();
+        let (x, y) = (
+            mark.origin.x + mark.size.width / 2.0,
+            mark.origin.y + mark.size.height / 2.0,
+        );
+        let display = displays
+            .iter()
+            .find(|d| {
+                let f = d.frame();
+                x >= f.origin.x
+                    && x < f.origin.x + f.size.width
+                    && y >= f.origin.y
+                    && y < f.origin.y + f.size.height
             })
-            .or_else(|| displays.iter().next())
-            .ok_or("ディスプレイが見つかりません")?;
+            .ok_or("共有しているディスプレイを特定できません")?;
         let me = sys::own_pid();
         let own: Vec<_> = content
             .applications()
