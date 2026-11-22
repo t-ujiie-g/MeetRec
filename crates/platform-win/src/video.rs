@@ -199,11 +199,15 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
             }
             let new_target = shared.retarget.lock().unwrap().take();
             if let Some(target) = new_target {
-                // 先に古いキャプチャを閉じてから新しい対象で作り直す（エンコーダは継続）。
-                capture = None;
-                shared.queue.clear();
                 match target {
-                    None => meetrec_core::info!("映像の取り込みを止めました"),
+                    None => {
+                        capture = None;
+                        shared.queue.clear();
+                        meetrec_core::info!("映像の取り込みを止めました");
+                    }
+                    // 新しい対象を取り込めたときだけ入れ替える（エンコーダは継続）。取り込めないウィンドウ
+                    // （Zoom の共有中のビデオパネルや Teams のコンパクト ビューで実機発生）へ張り替えようとして、
+                    // それまでの映像まで失わないようにする。
                     Some(target) => match Capture::start(
                         target,
                         &winrt_device,
@@ -213,11 +217,13 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
                     ) {
                         Ok(c) => {
                             meetrec_core::info!("キャプチャ対象を張り替えました: {target:x?}");
+                            // 古いキャプチャはここで閉じられる。残っている古いフレームは捨てる。
                             capture = Some(c);
+                            shared.queue.clear();
                         }
-                        Err(e) => {
-                            meetrec_core::warn!("張り替え先をキャプチャできません: {target:x?} {e}")
-                        }
+                        Err(e) => meetrec_core::warn!(
+                            "張り替え先をキャプチャできません（今の対象を続けます）: {target:x?} {e}"
+                        ),
                     },
                 }
             }
