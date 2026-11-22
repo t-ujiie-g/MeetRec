@@ -7,8 +7,8 @@ use meetrec_core::platform::{MicUser, ProcInfo, WindowInfo};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Media::Audio::{
-    AudioSessionStateActive, DEVICE_STATE_ACTIVE, IAudioSessionControl2, IAudioSessionManager2,
-    IMMDeviceEnumerator, MMDeviceEnumerator, eCapture,
+    AudioSessionStateActive, DEVICE_STATE_ACTIVE, EDataFlow, IAudioSessionControl2,
+    IAudioSessionManager2, IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eRender,
 };
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
@@ -61,12 +61,17 @@ impl Probe {
     }
 
     fn capture_sessions(&mut self) -> Vec<CaptureSession> {
+        self.sessions(eCapture)
+    }
+
+    /// 入力（`eCapture`）または出力（`eRender`）の機器を使っているオーディオセッションの一覧。
+    fn sessions(&mut self, flow: EDataFlow) -> Vec<CaptureSession> {
         let mut out = Vec::new();
         let Some(en) = self.enumerator() else {
             return out;
         };
         unsafe {
-            let Ok(devices) = en.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) else {
+            let Ok(devices) = en.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE) else {
                 // 列挙子が無効になった可能性があるので作り直す。
                 self.enumerator = None;
                 return out;
@@ -235,25 +240,34 @@ impl Probe {
                 );
             }
         }
-        let _ = writeln!(s, "-- キャプチャデバイスのオーディオセッション --");
         let me = unsafe { GetCurrentProcessId() };
-        let sessions = self.capture_sessions();
-        if sessions.is_empty() {
-            let _ = writeln!(s, "(なし)");
-        }
-        for c in sessions {
-            let name = procs
-                .iter()
-                .find(|p| p.pid == c.pid)
-                .map(|p| p.name.as_str());
-            let _ = writeln!(
-                s,
-                "pid={} name={} active={}{}",
-                c.pid,
-                name.unwrap_or("?"),
-                c.active,
-                if c.pid == me { " (MeetRec 自身)" } else { "" }
-            );
+        // 出力側は、相手の音をどのプロセスが出しているかを確かめるため（プロセスループバックの対象の
+        // ツリーに入っていないと録れない）。プロセス名と親だけを出す。
+        for (title, flow) in [
+            ("キャプチャデバイス（入力）", eCapture),
+            ("レンダーデバイス（出力）", eRender),
+        ] {
+            let _ = writeln!(s, "-- {title}のオーディオセッション --");
+            let sessions = self.sessions(flow);
+            if sessions.is_empty() {
+                let _ = writeln!(s, "(なし)");
+            }
+            for c in sessions {
+                let entry = procs.iter().find(|p| p.pid == c.pid);
+                let parent = entry.map_or(0, |p| p.parent);
+                let parent_name = procs
+                    .iter()
+                    .find(|p| p.pid == parent)
+                    .map_or("?", |p| p.name.as_str());
+                let _ = writeln!(
+                    s,
+                    "pid={} name={} parent={parent}({parent_name}) active={}{}",
+                    c.pid,
+                    entry.map_or("?", |p| p.name.as_str()),
+                    c.active,
+                    if c.pid == me { " (MeetRec 自身)" } else { "" }
+                );
+            }
         }
         let _ = writeln!(s, "マイクのプライバシー設定: 許可={}", microphone_allowed());
         s

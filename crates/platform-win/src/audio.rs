@@ -131,6 +131,8 @@ unsafe fn capture_loop(
         let capture: IAudioCaptureClient = client.GetService()?;
         client.Start()?;
         let mut pcm: Vec<f32> = Vec::new();
+        // 音が実際に届いたかを後から確かめられるよう、最初の 1 回だけログに残す。
+        let mut heard = false;
         let result = (|| -> WinResult<()> {
             while !stop.load(Ordering::SeqCst) && keep_going() {
                 WaitForSingleObject(event.0, 200);
@@ -147,6 +149,17 @@ unsafe fn capture_loop(
                             frames as usize * format.frame_bytes(),
                         );
                         format.to_f32(bytes, &mut pcm);
+                        if !heard {
+                            heard = true;
+                            meetrec_core::info!(
+                                "音声の最初のデータが届きました（{}）",
+                                if source == SRC_APP {
+                                    "相手音声"
+                                } else {
+                                    "マイク"
+                                }
+                            );
+                        }
                         // QPC 位置は 100ns 単位。無効・異常値なら現在時刻から逆算する。
                         let now = sys::qpc_ns();
                         let mut pts = qpc.wrapping_mul(100);
