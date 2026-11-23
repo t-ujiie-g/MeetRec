@@ -41,6 +41,7 @@ crates/core            OS 非依存のロジック（Linux でもテストでき
   controller/            録画中の追従（recording.rs）、診断ログ（diagnostics.rs）、テスト（tests.rs）
   session.rs             録画セッション（ミキサ → AAC → fragmented MP4）
   audio.rs / mp4.rs / h264.rs   音声ミキサ、fMP4 の muxer と修復、H.264 の変換
+  output.rs              出力機器の消音を外して音量を 0 にする判断（Windows の「PC から出る音すべて」の録画。D37）
   storage.rs / config.rs / log.rs / metrics.rs / text.rs   保存、設定、ログ、自己計測、UI 文言
   platform.rs            OS 層との境界（`Platform` / `App` trait と受け渡す型）
 crates/platform-mac    macOS 層（ScreenCaptureKit / VideoToolbox / AudioToolbox / CoreAudio / AppKit / アクセシビリティ API）
@@ -49,6 +50,7 @@ crates/app             エントリポイント（`main.rs`）と Windows のマ
 packaging/macos        .app の組み立てと署名
 packaging/windows      インストーラ（Inno Setup の `MeetRec.iss`。CI の Windows ジョブが `MeetRec-setup.exe` を作る）
 docs                   実機確認の手順、署名・公証の手順、Windows の Teams の音の調査の手引き
+tools/lbtest           Windows の音の録り方を確かめる検証用ツール（ワークスペースの外。本体・CI には入らない）
 ```
 
 ## 守ること
@@ -92,6 +94,7 @@ docs                   実機確認の手順、署名・公証の手順、Window
   - 両 OS で揃える値は core に置く。時間の単位（`NS_PER_SEC`）は `platform.rs`、音声の形式（`OUT_RATE`・`FRAME`・`FRAME_LEN`・`DEFAULT_ASC`）は
     `audio.rs`、エンコードの制限（`SOFTWARE_MAX_LONG_SIDE`・`VIDEO_TIMESCALE`）は `session.rs` / `mp4.rs`、UI 文言は `text.rs`、
     会議アプリの定数表（Teams のタブ名 `TEAMS_TABS` を含む）は `rules/builtin.rs`、目標値（メモリ・CPU）は `metrics.rs`、
+    出力機器の音量の閾値（`ZERO_EPS`・`JUMP`）は `output.rs`、
     OS 層の動きを揃える間隔（`CONTROL_SEARCH_RETRY_NS`）は `platform.rs`。
   - 設定の既定値と範囲は `config.rs` が正。README の設定例はこれに揃える。
   - 1 ファイルの中でしか使わない閾値・待ち時間は、そのファイルの先頭の `const` にする。
