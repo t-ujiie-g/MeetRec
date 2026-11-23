@@ -127,6 +127,9 @@ pub enum RecorderEvent {
     Failed(String),
     /// 映像が取得できない（キャプチャ保護・権限なし等）。音声のみで継続中。
     VideoUnavailable(String),
+    /// Windows：消音だった出力機器を、消音を外して音量 0 に切り替えた（`RecordRequest::system_audio` の録画。
+    /// 録画が終わったら OS 層が元に戻す）。
+    OutputUnmuted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +170,7 @@ pub struct RecordRequest {
     /// 音声を録る会議アプリのルートプロセス（Windows: プロセスツリーの根）。
     pub root_pid: Pid,
     /// Windows：会議アプリの音だけでなく、PC から出る音すべてを録る（`AppRule::system_audio`）。
+    /// 出力機器が消音のあいだは、消音を外して音量を 0 にする（D37）。
     pub system_audio: bool,
     pub settings: RecordSettings,
 }

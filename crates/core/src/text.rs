@@ -57,6 +57,8 @@ pub fn duration_text(ms: u64) -> String {
 pub const NOTICE_STARTED: &str = "録画を開始しました";
 pub const NOTICE_SAVED: &str = "保存しました（クリックでフォルダを開く）";
 pub const NOTICE_AUDIO_ONLY: &str = "映像を取得できないため、音声のみ録音しています";
+pub const NOTICE_OUTPUT_UNMUTED: &str =
+    "相手の音を録るため、PC の消音を外して音量を 0 にしました（録画が終わると元に戻します）";
 pub const NOTICE_NO_WINDOW: &str = "会議アプリ（Zoom / Teams）のウィンドウが見つかりません";
 pub const NOTICE_DISK_LOW: &str = "ディスクの空きが少ないため録画を停止しました";
 pub const NOTICE_DISK_LOW_START: &str = "ディスクの空きが足りないため録画を開始できません";
