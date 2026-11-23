@@ -14,6 +14,7 @@ pub mod h264;
 pub mod log;
 pub mod metrics;
 pub mod mp4;
+pub mod output;
 pub mod platform;
 pub mod rules;
 pub mod session;

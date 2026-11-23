@@ -1,29 +1,34 @@
 //! WASAPI キャプチャ：会議アプリのプロセスループバック（相手音声）とマイク。
 //! どちらもイベント駆動の専用スレッドで動き、PCM を float に直してミキサへ渡す。
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use meetrec_core::platform::NS_PER_SEC;
+use meetrec_core::output::{self, OutputUnmute, Restore};
+use meetrec_core::platform::{NS_PER_SEC, RecorderEvent};
 use meetrec_core::session::{SRC_APP, SRC_MIC};
 use windows::Win32::Foundation::E_FAIL;
+use windows::Win32::Media::Audio::Endpoints::{
+    IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
+};
 use windows::Win32::Media::Audio::{
     AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS,
-    AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-    AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync,
-    IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
-    IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient, IMMDevice,
-    IMMDeviceEnumerator, MMDeviceEnumerator, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
-    VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eCapture,
-    eCommunications, eConsole, eRender,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
+    AUDIO_VOLUME_NOTIFICATION_DATA, AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
+    AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
+    ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
+    IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl,
+    IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+    PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+    WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eCapture, eCommunications, eConsole, eRender,
 };
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::core::{GUID, HRESULT, Interface, Ref, Result as WinResult, implement};
 
+use crate::app::post_recorder_event;
 use crate::probe;
 use crate::recorder::Holder;
 use crate::sys::{self, Handle, from_wide};
@@ -296,9 +301,127 @@ unsafe fn process_loopback_once(pid: u32, holder: &Holder, stop: &AtomicBool) ->
     }
 }
 
+/// 出力機器の音量の変化を受け取り、「0 から一気に上がった」（`output::is_jump`）ことだけを覚える。
+/// 通知は OS のスレッドで届くので、ここでは印を付けるだけにして、音量の操作は録音スレッドでする。
+#[implement(IAudioEndpointVolumeCallback)]
+struct VolumeJump(Arc<JumpState>);
+
+struct JumpState {
+    /// 直前に通知された音量（f32 のビット列）。
+    last: AtomicU32,
+    jumped: AtomicBool,
+}
+
+impl IAudioEndpointVolumeCallback_Impl for VolumeJump_Impl {
+    fn OnNotify(&self, data: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> WinResult<()> {
+        // SAFETY: 呼び出しの間だけ有効なポインタを、その場で読むだけ。
+        let Some(d) = (unsafe { data.as_ref() }) else {
+            return Ok(());
+        };
+        let now = d.fMasterVolume;
+        let prev = f32::from_bits(self.0.last.swap(now.to_bits(), Ordering::SeqCst));
+        if output::is_jump(prev, now, d.bMuted.as_bool()) {
+            self.0.jumped.store(true, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+}
+
+/// 録っている出力機器の消音と音量。いつ・何をするかは `core::output` が決め、ここは機器を読み書きする（D37）。
+struct OutputVolume {
+    volume: IAudioEndpointVolume,
+    state: OutputUnmute,
+    jump: Arc<JumpState>,
+    callback: IAudioEndpointVolumeCallback,
+}
+
+impl OutputVolume {
+    unsafe fn new(volume: IAudioEndpointVolume) -> OutputVolume {
+        let jump = Arc::new(JumpState {
+            // 0 が通知されるまでは「0 から上がった」と数えない。
+            last: AtomicU32::new(1f32.to_bits()),
+            jumped: AtomicBool::new(false),
+        });
+        let callback: IAudioEndpointVolumeCallback = VolumeJump(jump.clone()).into();
+        // 受け取れなくても、消音を外すことはできる（一気に上げられた音量を戻せないだけ）。
+        if let Err(e) = unsafe { volume.RegisterControlChangeNotify(&callback) } {
+            meetrec_core::warn!("出力機器の音量の変化を受け取れません: {e}");
+        }
+        OutputVolume {
+            volume,
+            state: OutputUnmute::default(),
+            jump,
+            callback,
+        }
+    }
+
+    /// 消音なら、音量を 0 にしてから消音を外す。切り替えたら true。
+    unsafe fn unmute_if_muted(&mut self) -> WinResult<bool> {
+        unsafe {
+            if !self.volume.GetMute()?.as_bool() {
+                return Ok(false);
+            }
+            let level = self.volume.GetMasterVolumeLevelScalar()?;
+            // 先に音量を 0 にする（消音を先に外すと、その間だけ音が出る）。
+            self.volume
+                .SetMasterVolumeLevelScalar(0.0, std::ptr::null())?;
+            self.volume.SetMute(false, std::ptr::null())?;
+            self.state.unmuted(level);
+            Ok(true)
+        }
+    }
+
+    /// 音量が 0 から一気に上げられていたら、`core::output` の決まりに従って 0 に戻す。
+    unsafe fn revert_jump(&mut self) {
+        if !self.jump.jumped.swap(false, Ordering::SeqCst) || !self.state.jumped() {
+            return;
+        }
+        match unsafe {
+            self.volume
+                .SetMasterVolumeLevelScalar(0.0, std::ptr::null())
+        } {
+            Ok(()) => {
+                meetrec_core::info!("出力機器の音量が 0 から一気に上げられたので、0 に戻しました")
+            }
+            Err(e) => meetrec_core::warn!("出力機器の音量を 0 に戻せません: {e}"),
+        }
+    }
+
+    /// 音量の変化の受け取りをやめ、消音と音量を元に戻す（利用者が自分で音量を上げていたら、戻さない）。
+    unsafe fn finish(&mut self) {
+        unsafe {
+            let _ = self.volume.UnregisterControlChangeNotify(&self.callback);
+            let now = self.volume.GetMasterVolumeLevelScalar().unwrap_or(f32::NAN);
+            match self.state.finish(now) {
+                Restore::Untouched => {}
+                Restore::Keep => {
+                    meetrec_core::info!("出力機器の音量が変えられていたので、消音は元に戻しません")
+                }
+                Restore::Remute(level) => {
+                    // 先に消音にする（音量を先に戻すと、その間だけ音が出る）。
+                    let muted = self.volume.SetMute(true, std::ptr::null());
+                    let set = self
+                        .volume
+                        .SetMasterVolumeLevelScalar(level, std::ptr::null());
+                    match muted.and(set) {
+                        Ok(()) => meetrec_core::info!("出力機器の消音と音量を元に戻しました"),
+                        Err(e) => meetrec_core::warn!("出力機器の消音を元に戻せません: {e}"),
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// PC から出る音すべて（会議アプリが音を出している出力機器のループバック）を録る。
 /// プロセスループバックで録れないアプリ用（D36）。出力機器が変わったら Ok で戻る（開き直す）。
-unsafe fn system_loopback_once(root: u32, holder: &Holder, stop: &AtomicBool) -> WinResult<()> {
+/// 録っているあいだ、出力機器が消音なら、消音を外して音量を 0 にする（D37。`main_hwnd` へ知らせる）。
+unsafe fn system_loopback_once(
+    root: u32,
+    holder: &Holder,
+    stop: &AtomicBool,
+    main_hwnd: isize,
+) -> WinResult<()> {
     unsafe {
         let en: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
         // 会議アプリが音を出している機器。まだ出していなければ既定の機器（通話用 → 通常）。
@@ -331,28 +454,61 @@ unsafe fn system_loopback_once(root: u32, holder: &Holder, stop: &AtomicBool) ->
         init?;
         let format = format.unwrap();
         meetrec_core::info!("相手音声のキャプチャ開始（PC から出る音すべて）: {format:?}");
-        // 出力機器の変更（イヤホン接続など）を 2 秒ごとに確認し、変わったら開き直す。
+        // 消音を外せなくても（機器が対応していないなど）、録音は続ける。
+        let mut endpoint = device
+            .Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None)
+            .ok()
+            .map(|volume| OutputVolume::new(volume));
+        let unmute_if_muted = |endpoint: &mut Option<OutputVolume>| {
+            if let Some(e) = endpoint {
+                match e.unmute_if_muted() {
+                    Ok(true) => {
+                        meetrec_core::info!("出力機器の消音を外して、音量を 0 にしました");
+                        post_recorder_event(main_hwnd, RecorderEvent::OutputUnmuted);
+                    }
+                    Ok(false) => {}
+                    Err(err) => meetrec_core::warn!("出力機器の消音を外せません: {err}"),
+                }
+            }
+        };
+        unmute_if_muted(&mut endpoint);
+        // 出力機器の変更（イヤホン接続など）と消音を 2 秒ごとに確認する。機器が変わったら開き直す。
+        // 一気に上げられた音量は、待たずに戻す（音が出る時間を短くする）。
         let mut last_check = Instant::now();
-        capture_loop(&client, format, SRC_APP, holder, stop, || {
+        let result = capture_loop(&client, format, SRC_APP, holder, stop, || {
+            if let Some(e) = &mut endpoint {
+                e.revert_jump();
+            }
             if last_check.elapsed() < Duration::from_secs(2) {
                 return true;
             }
             last_check = Instant::now();
+            unmute_if_muted(&mut endpoint);
             pick().is_ok_and(|(_, current)| current == id)
-        })
+        });
+        if let Some(e) = &mut endpoint {
+            e.finish();
+        }
+        result
     }
 }
 
 /// 相手の音を録る。`system` が false なら会議アプリが出す音だけ、true なら PC から出る音すべて
 /// （プロセス単位では録れないアプリ用。D36）。
-pub fn run_loopback(holder: Arc<Holder>, stop: Arc<AtomicBool>, pid: u32, system: bool) {
+pub fn run_loopback(
+    holder: Arc<Holder>,
+    stop: Arc<AtomicBool>,
+    pid: u32,
+    system: bool,
+    main_hwnd: isize,
+) {
     sys::com_init_mta();
     // デバイス無効化などで止まっても、録画が続く限り開き直す（マイクと同じ方針）。
     let mut failures = 0u32;
     while !stop.load(Ordering::SeqCst) {
         let result = unsafe {
             if system {
-                system_loopback_once(pid, &holder, &stop)
+                system_loopback_once(pid, &holder, &stop, main_hwnd)
             } else {
                 process_loopback_once(pid, &holder, &stop)
             }

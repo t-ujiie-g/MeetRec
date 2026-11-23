@@ -121,7 +121,7 @@ impl Recorder {
             let (h, st) = (holder.clone(), stop.clone());
             let system_audio = req.system_audio;
             workers.extend(spawn("loopback", move || {
-                audio::run_loopback(h, st, root_pid, system_audio)
+                audio::run_loopback(h, st, root_pid, system_audio, main_hwnd)
             }));
         } else {
             meetrec_core::warn!("対象プロセスが不明のため相手音声は録音しません");

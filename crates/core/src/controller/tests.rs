@@ -699,6 +699,28 @@ fn recorder_failure_and_audio_only_notice() {
 }
 
 #[test]
+fn output_unmuted_is_notified_each_time_while_recording() {
+    let mut h = H::new("ctl-unmuted", Mode::Auto);
+    let count = |h: &H| {
+        h.p.notices
+            .iter()
+            .filter(|n| n.body == text::NOTICE_OUTPUT_UNMUTED)
+            .count()
+    };
+    // 録画していないときに届いても知らせない（停止と行き違った場合）。
+    h.ev(UiEvent::Recorder(RecorderEvent::OutputUnmuted));
+    assert_eq!(count(&h), 0);
+    h.join();
+    h.ticks(3);
+    assert!(h.c.is_recording());
+    // PC の設定を変えたことは、切り替えるたびに知らせる。
+    h.ev(UiEvent::Recorder(RecorderEvent::OutputUnmuted));
+    h.ev(UiEvent::Recorder(RecorderEvent::OutputUnmuted));
+    assert_eq!(count(&h), 2);
+    assert!(h.c.is_recording());
+}
+
+#[test]
 fn mode_switch_during_meeting() {
     let mut h = H::new("ctl-mode", Mode::Ask);
     h.join();
