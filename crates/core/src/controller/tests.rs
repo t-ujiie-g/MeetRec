@@ -118,6 +118,9 @@ impl Platform for Mock {
     fn set_mic_enabled(&mut self, enabled: bool) {
         self.calls.push(format!("mic {enabled}"));
     }
+    fn settle_output(&mut self) {
+        self.calls.push("settle_output".into());
+    }
     fn find_control(&mut self, _: Pid, names: &[String]) -> Option<String> {
         self.control
             .clone()
@@ -718,6 +721,73 @@ fn output_unmuted_is_notified_each_time_while_recording() {
     h.ev(UiEvent::Recorder(RecorderEvent::OutputUnmuted));
     assert_eq!(count(&h), 2);
     assert!(h.c.is_recording());
+}
+
+/// Windows の Teams：参加前の画面で録画が始まった状態にする（タイトルは実機で確認）。
+fn teams_win_prejoin(h: &mut H) -> crate::platform::ProcInfo {
+    let teams = proc_(9, "ms-teams.exe", None);
+    h.p.mic = vec![MicUser {
+        chain: vec![teams.clone()],
+    }];
+    h.p.windows = vec![win(
+        5,
+        teams.clone(),
+        "会議への参加 | Microsoft Teams 会議 | Microsoft Teams",
+        "TeamsWebView",
+        1280,
+        800,
+    )];
+    h.ticks(3);
+    assert!(h.c.is_recording());
+    teams
+}
+
+#[test]
+fn output_volume_is_left_alone_once_the_meeting_has_settled() {
+    let mut h = H::new("ctl-settle", Mode::Auto);
+    let teams = teams_win_prejoin(&mut h);
+    let req = h.p.recording.clone().unwrap();
+    assert!(req.system_audio && req.unmute_output);
+    // 参加前の画面にいるあいだは、何分待っても伝えない（参加の瞬間に上げられる音量を戻せるように）。
+    h.ticks(60);
+    assert_eq!(h.count("settle_output"), 0);
+    // 会議に入った（会議名の付いたタイトルになる）。直後はまだ伝えない。
+    h.p.windows = vec![win(
+        5,
+        teams,
+        "test | Microsoft Teams",
+        "TeamsWebView",
+        1280,
+        800,
+    )];
+    h.ticks(2);
+    assert_eq!(h.count("settle_output"), 0);
+    // 10 秒ほど経ったら 1 回だけ伝える。以後、利用者が音量を上げても戻さない。
+    h.ticks(5);
+    assert_eq!(h.count("settle_output"), 1);
+    h.ticks(30);
+    assert_eq!(h.count("settle_output"), 1);
+}
+
+#[test]
+fn unmute_output_can_be_turned_off_and_only_applies_to_system_audio() {
+    // 設定で止めた：出力機器に触らせない（PC の音すべてを録るのは変わらない）。
+    let mut h = H::new("ctl-unmute-off", Mode::Auto);
+    h.c.cfg.audio.unmute_output = false;
+    teams_win_prejoin(&mut h);
+    let req = h.p.recording.clone().unwrap();
+    assert!(req.system_audio && !req.unmute_output);
+    h.ticks(60);
+    assert_eq!(h.count("settle_output"), 0);
+
+    // Zoom はアプリの音だけを録るので、設定に関係なく触らない。
+    let mut h = H::new("ctl-unmute-zoom", Mode::Auto);
+    h.join();
+    h.ticks(3);
+    let req = h.p.recording.clone().unwrap();
+    assert!(!req.system_audio && !req.unmute_output);
+    h.ticks(30);
+    assert_eq!(h.count("settle_output"), 0);
 }
 
 #[test]

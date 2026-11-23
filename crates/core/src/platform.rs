@@ -170,8 +170,10 @@ pub struct RecordRequest {
     /// 音声を録る会議アプリのルートプロセス（Windows: プロセスツリーの根）。
     pub root_pid: Pid,
     /// Windows：会議アプリの音だけでなく、PC から出る音すべてを録る（`AppRule::system_audio`）。
-    /// 出力機器が消音のあいだは、消音を外して音量を 0 にする（D37）。
     pub system_audio: bool,
+    /// Windows：`system_audio` の録画で、出力機器が消音のあいだは、消音を外して音量を 0 にする（D37。
+    /// 設定 `audio.unmute_output`）。false なら出力機器の設定に触らない。
+    pub unmute_output: bool,
     pub settings: RecordSettings,
 }
 
@@ -230,6 +232,9 @@ pub trait Platform {
     /// 録画中に、自分のマイクを録る・録らないを切り替える（録らない間は無音になる）。
     /// 録画中でない・マイクを開いていない場合は何もしない。
     fn set_mic_enabled(&mut self, enabled: bool);
+    /// 会議に入ってしばらく経った。以後、この録画では出力機器の音量を 0 に戻さない（`RecordRequest::unmute_output`
+    /// の録画。消音を外すのは続ける。D37）。出力機器に触らない OS 層は何もしない。
+    fn settle_output(&mut self);
     /// 同期的に確定して結果を返す。録画中でなければ None。
     fn stop_recording(&mut self) -> Option<RecordingSummary>;
 

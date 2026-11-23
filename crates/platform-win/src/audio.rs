@@ -301,7 +301,8 @@ unsafe fn process_loopback_once(pid: u32, holder: &Holder, stop: &AtomicBool) ->
     }
 }
 
-/// 出力機器の音量の変化を受け取り、「0 から一気に上がった」（`output::is_jump`）ことだけを覚える。
+/// 出力機器の音量の変化を受け取り、「0 から一気に上がった」（`output::is_jump`）ことと、
+/// 「利用者が自分で音量を決めた」（`output::is_user_set`）ことだけを覚える。
 /// 通知は OS のスレッドで届くので、ここでは印を付けるだけにして、音量の操作は録音スレッドでする。
 #[implement(IAudioEndpointVolumeCallback)]
 struct VolumeJump(Arc<JumpState>);
@@ -310,6 +311,7 @@ struct JumpState {
     /// 直前に通知された音量（f32 のビット列）。
     last: AtomicU32,
     jumped: AtomicBool,
+    user_set: AtomicBool,
 }
 
 impl IAudioEndpointVolumeCallback_Impl for VolumeJump_Impl {
@@ -320,8 +322,11 @@ impl IAudioEndpointVolumeCallback_Impl for VolumeJump_Impl {
         };
         let now = d.fMasterVolume;
         let prev = f32::from_bits(self.0.last.swap(now.to_bits(), Ordering::SeqCst));
-        if output::is_jump(prev, now, d.bMuted.as_bool()) {
+        let muted = d.bMuted.as_bool();
+        if output::is_jump(prev, now, muted) {
             self.0.jumped.store(true, Ordering::SeqCst);
+        } else if output::is_user_set(prev, now, muted) {
+            self.0.user_set.store(true, Ordering::SeqCst);
         }
         Ok(())
     }
@@ -333,14 +338,17 @@ struct OutputVolume {
     state: OutputUnmute,
     jump: Arc<JumpState>,
     callback: IAudioEndpointVolumeCallback,
+    /// 会議に入ってしばらく経った（`Recorder::settle_output`）。以後は音量を 0 に戻さない。
+    settled: Arc<AtomicBool>,
 }
 
 impl OutputVolume {
-    unsafe fn new(volume: IAudioEndpointVolume) -> OutputVolume {
+    unsafe fn new(volume: IAudioEndpointVolume, settled: Arc<AtomicBool>) -> OutputVolume {
         let jump = Arc::new(JumpState {
             // 0 が通知されるまでは「0 から上がった」と数えない。
             last: AtomicU32::new(1f32.to_bits()),
             jumped: AtomicBool::new(false),
+            user_set: AtomicBool::new(false),
         });
         let callback: IAudioEndpointVolumeCallback = VolumeJump(jump.clone()).into();
         // 受け取れなくても、消音を外すことはできる（一気に上げられた音量を戻せないだけ）。
@@ -352,6 +360,14 @@ impl OutputVolume {
             state: OutputUnmute::default(),
             jump,
             callback,
+            settled,
+        }
+    }
+
+    /// 会議に入ってしばらく経っていたら、`core::output` に伝える（以後は音量を戻さない）。
+    fn sync_settled(&mut self) {
+        if self.settled.load(Ordering::SeqCst) {
+            self.state.settle();
         }
     }
 
@@ -366,6 +382,10 @@ impl OutputVolume {
             self.volume
                 .SetMasterVolumeLevelScalar(0.0, std::ptr::null())?;
             self.volume.SetMute(false, std::ptr::null())?;
+            // 消音にする前の利用者の操作は、数えない（ここから数え直す）。
+            self.jump.user_set.store(false, Ordering::SeqCst);
+            self.jump.jumped.store(false, Ordering::SeqCst);
+            self.sync_settled();
             self.state.unmuted(level);
             Ok(true)
         }
@@ -373,6 +393,11 @@ impl OutputVolume {
 
     /// 音量が 0 から一気に上げられていたら、`core::output` の決まりに従って 0 に戻す。
     unsafe fn revert_jump(&mut self) {
+        self.sync_settled();
+        // 利用者が自分で音量を決めていたら、以後は触らない（参加前に、聞くつもりで上げた場合など）。
+        if self.jump.user_set.swap(false, Ordering::SeqCst) {
+            self.state.user_set();
+        }
         if !self.jump.jumped.swap(false, Ordering::SeqCst) || !self.state.jumped() {
             return;
         }
@@ -415,11 +440,13 @@ impl OutputVolume {
 
 /// PC から出る音すべて（会議アプリが音を出している出力機器のループバック）を録る。
 /// プロセスループバックで録れないアプリ用（D36）。出力機器が変わったら Ok で戻る（開き直す）。
-/// 録っているあいだ、出力機器が消音なら、消音を外して音量を 0 にする（D37。`main_hwnd` へ知らせる）。
+/// `unmute` なら、録っているあいだ、出力機器が消音なら消音を外して音量を 0 にする（D37。`main_hwnd` へ知らせる）。
 unsafe fn system_loopback_once(
     root: u32,
     holder: &Holder,
     stop: &AtomicBool,
+    unmute: bool,
+    settled: &Arc<AtomicBool>,
     main_hwnd: isize,
 ) -> WinResult<()> {
     unsafe {
@@ -455,10 +482,18 @@ unsafe fn system_loopback_once(
         let format = format.unwrap();
         meetrec_core::info!("相手音声のキャプチャ開始（PC から出る音すべて）: {format:?}");
         // 消音を外せなくても（機器が対応していないなど）、録音は続ける。
-        let mut endpoint = device
-            .Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None)
-            .ok()
-            .map(|volume| OutputVolume::new(volume));
+        // 設定（`audio.unmute_output = false`）で止められているときは、出力機器の設定を読みも書きもしない。
+        let mut endpoint = if unmute {
+            device
+                .Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None)
+                .ok()
+                .map(|volume| OutputVolume::new(volume, settled.clone()))
+        } else {
+            meetrec_core::info!(
+                "設定により、出力機器の消音は外しません（消音のあいだ、相手の音は録れません）"
+            );
+            None
+        };
         let unmute_if_muted = |endpoint: &mut Option<OutputVolume>| {
             if let Some(e) = endpoint {
                 match e.unmute_if_muted() {
@@ -493,24 +528,35 @@ unsafe fn system_loopback_once(
     }
 }
 
-/// 相手の音を録る。`system` が false なら会議アプリが出す音だけ、true なら PC から出る音すべて
-/// （プロセス単位では録れないアプリ用。D36）。
-pub fn run_loopback(
-    holder: Arc<Holder>,
-    stop: Arc<AtomicBool>,
-    pid: u32,
-    system: bool,
-    main_hwnd: isize,
-) {
+/// 相手の音の録り方。
+pub enum Loopback {
+    /// 会議アプリ（子プロセスを含む）が出す音だけ。
+    Process,
+    /// PC から出る音すべて（プロセス単位では録れないアプリ用。D36）。
+    System {
+        /// 出力機器が消音なら、消音を外して音量を 0 にする（D37）。
+        unmute: bool,
+        /// 会議に入ってしばらく経った（以後は音量を 0 に戻さない）。
+        settled: Arc<AtomicBool>,
+        /// 消音を外したことを知らせる先。
+        main_hwnd: isize,
+    },
+}
+
+/// 相手の音を録る。
+pub fn run_loopback(holder: Arc<Holder>, stop: Arc<AtomicBool>, pid: u32, how: Loopback) {
     sys::com_init_mta();
     // デバイス無効化などで止まっても、録画が続く限り開き直す（マイクと同じ方針）。
     let mut failures = 0u32;
     while !stop.load(Ordering::SeqCst) {
         let result = unsafe {
-            if system {
-                system_loopback_once(pid, &holder, &stop, main_hwnd)
-            } else {
-                process_loopback_once(pid, &holder, &stop)
+            match &how {
+                Loopback::Process => process_loopback_once(pid, &holder, &stop),
+                Loopback::System {
+                    unmute,
+                    settled,
+                    main_hwnd,
+                } => system_loopback_once(pid, &holder, &stop, *unmute, settled, *main_hwnd),
             }
         };
         if stop.load(Ordering::SeqCst) {

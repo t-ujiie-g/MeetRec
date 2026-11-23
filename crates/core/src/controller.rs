@@ -322,6 +322,9 @@ impl Controller {
         if !rec.follow_share(p, obs, best, self.cfg.video.record_shared_screen) {
             rec.follow_windows(p, obs, best, now);
         }
+        let joined =
+            best.is_some_and(|w| self.rules.meeting_title(rec.app, &w.info.title).is_some());
+        rec.settle_output(p, joined, now);
 
         let mut stop_reason = None;
         if rec.manual {
@@ -449,6 +452,7 @@ impl Controller {
             window: window.clone(),
             root_pid,
             system_audio: rule.system_audio,
+            unmute_output: rule.system_audio && self.cfg.audio.unmute_output,
             settings: self.cfg.record_settings(),
         };
         match p.start_recording(&req) {
@@ -478,6 +482,8 @@ impl Controller {
                     audio_only_notified: false,
                     screen: false,
                     screen_failed: false,
+                    joined_since: None,
+                    output_settled: !req.unmute_output,
                     last_windows: String::new(),
                 });
                 true

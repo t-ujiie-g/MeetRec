@@ -14,6 +14,12 @@ pub fn is_jump(prev: f32, now: f32, muted: bool) -> bool {
     !muted && prev <= ZERO_EPS && now >= JUMP
 }
 
+/// 音量の 1 回の変化が「利用者が自分で音量を決めた」に当たるか（音量キーやスライダーで少しずつ動かした、
+/// 0 以外の音量から変えた）。一気に上がった分（`is_jump`）は、会議アプリが上げたものと区別できないので当たらない。
+pub fn is_user_set(prev: f32, now: f32, muted: bool) -> bool {
+    !muted && now > ZERO_EPS && !is_jump(prev, now, muted)
+}
+
 /// 取り込みを終えるときに、出力機器をどう戻すか。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Restore {
@@ -30,23 +36,40 @@ pub enum Restore {
 pub struct OutputUnmute {
     /// 消音を外す前の音量（0〜1）。まだ外していなければ None。
     saved: Option<f32>,
-    /// 次に音量が一気に上げられたら 0 に戻す（消音を外すたびに 1 回だけ）。
+    /// 次に音量が一気に上げられたら 0 に戻す（消音を外すたびに 1 回だけ。会議に入った直後まで）。
     revert_next: bool,
+    /// 会議に入ってしばらく経った。以後は、音量が上げられても戻さない。
+    settled: bool,
 }
 
 impl OutputUnmute {
     /// 消音を外して音量を 0 にした。`level` は外す直前の音量。
-    /// 利用者が消音にし直したあとの 2 回目以降は、最初に覚えた音量を残す（2 回目の直前の音量は 0 なので）。
+    /// 利用者が消音にし直したあとの 2 回目以降は、直前の音量が 0 なら前に覚えた音量を残し、0 でなければ
+    /// （利用者が自分で上げてから消音にした）その音量を覚え直す。
     pub fn unmuted(&mut self, level: f32) {
-        self.saved.get_or_insert(level);
-        self.revert_next = true;
+        if level > ZERO_EPS || self.saved.is_none() {
+            self.saved = Some(level);
+        }
+        self.revert_next = !self.settled;
     }
 
     /// 音量が 0 から一気に上げられた（`is_jump`）。0 に戻すなら true。
-    /// 消音を外したあとの最初の 1 回だけ戻す（会議に入るときに会議アプリが上げる分）。2 回目からは、
-    /// 利用者がスライダーで上げたものとして、そのままにする。
+    /// 戻すのは、消音を外したあとの最初の 1 回だけ（会議に入るときに会議アプリが上げる分）で、利用者が自分で
+    /// 音量を決める（`user_set`）前、かつ会議に入ってしばらく経つ（`settle`）前に限る。それ以外は利用者の操作として通す。
     pub fn jumped(&mut self) -> bool {
         std::mem::take(&mut self.revert_next)
+    }
+
+    /// 利用者が自分で音量を決めた（`is_user_set`）。以後、もう一度消音を外すまで、音量には触らない
+    /// （参加前に、聞くつもりで上げた音量を消さない）。
+    pub fn user_set(&mut self) {
+        self.revert_next = false;
+    }
+
+    /// 会議に入ってしばらく経った。以後、この録画では音量を戻さない（消音を外すのは続ける）。
+    pub fn settle(&mut self) {
+        self.settled = true;
+        self.revert_next = false;
     }
 
     /// 取り込みを終える。`now` は今の音量（読めなければ NaN）。出力機器をどう戻すかを返す。
@@ -76,6 +99,49 @@ mod tests {
         // 消音中は音が出ないので数えない（録画の終わりに元の音量へ戻すときなど）。
         assert!(!is_jump(0.0, 0.41, true));
         assert!(!is_jump(0.0, f32::NAN, false));
+    }
+
+    #[test]
+    fn user_set_is_a_small_step_or_a_change_from_nonzero() {
+        // 音量キー（2% ずつ）やスライダーのドラッグ、0 以外からの変化。
+        assert!(is_user_set(0.0, 0.02, false));
+        assert!(is_user_set(0.02, 0.04, false));
+        assert!(is_user_set(0.3, 0.6, false));
+        assert!(is_user_set(0.3, 0.25, false));
+        // 一気に上がった分は、会議アプリが上げたものと区別できない。
+        assert!(!is_user_set(0.0, 0.2, false));
+        // MeetRec 自身の操作（音量 0 にする・消音中の変化）は当たらない。
+        assert!(!is_user_set(0.41, 0.0, true));
+        assert!(!is_user_set(0.2, 0.0, false));
+        assert!(!is_user_set(0.0, 0.41, true));
+        assert!(!is_user_set(0.0, f32::NAN, false));
+    }
+
+    #[test]
+    fn user_set_before_joining_keeps_the_volume() {
+        // 参加前に、聞くつもりで自分で音量を上げた：そのあとは触らない。
+        let mut u = OutputUnmute::default();
+        u.unmuted(0.41);
+        u.user_set();
+        assert!(!u.jumped());
+        // もう一度消音にされて外したら、数え直す（音を出したくない、に戻ったので）。
+        u.unmuted(0.3);
+        assert!(u.jumped());
+        // そのときは、自分で上げていた音量を覚え直している。
+        assert_eq!(u.finish(0.0), Restore::Remute(0.3));
+    }
+
+    #[test]
+    fn nothing_is_reverted_after_the_meeting_has_settled() {
+        // 会議に入ってしばらく経ったあとは、一気に上げても利用者の操作として通す。
+        let mut u = OutputUnmute::default();
+        u.unmuted(0.41);
+        u.settle();
+        assert!(!u.jumped());
+        // 録画中に消音にし直されて外しても、もう戻さない（消音を外すのは続ける）。
+        u.unmuted(0.0);
+        assert!(!u.jumped());
+        assert_eq!(u.finish(0.0), Restore::Remute(0.41));
     }
 
     #[test]

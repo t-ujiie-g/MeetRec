@@ -612,6 +612,12 @@ impl Platform for WinPlatform {
         }
     }
 
+    fn settle_output(&mut self) {
+        if let Some(r) = &self.recorder {
+            r.settle_output();
+        }
+    }
+
     fn stop_recording(&mut self) -> Option<RecordingSummary> {
         self.recorder.take().map(|r| r.stop())
     }
