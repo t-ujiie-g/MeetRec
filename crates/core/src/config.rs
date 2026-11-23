@@ -54,6 +54,9 @@ pub struct AudioConfig {
     pub capture_mic: bool,
     /// 会議アプリでミュートしている間は、自分のマイクを録らない（見分けられない場合は録り続ける）。
     pub follow_app_mute: bool,
+    /// Windows の「PC から出る音すべて」の録画（Teams）で、PC が消音なら、録画中だけ消音を外して音量を 0 にする（D37）。
+    /// false なら PC の音量設定に触らない（消音のあいだ、相手の音は録れない）。
+    pub unmute_output: bool,
     /// true なら「ミックス」に加えて相手音声・マイクを別トラックでも保存する。
     pub separate_tracks: bool,
 }
@@ -64,6 +67,7 @@ impl Default for AudioConfig {
             bitrate_kbps: 96,
             capture_mic: true,
             follow_app_mute: true,
+            unmute_output: true,
             separate_tracks: false,
         }
     }

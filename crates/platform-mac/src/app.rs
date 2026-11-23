@@ -512,6 +512,9 @@ impl Platform for MacPlatform {
         }
     }
 
+    // macOS は会議アプリの音だけを録り、出力機器には触らない。
+    fn settle_output(&mut self) {}
+
     fn stop_recording(&mut self) -> Option<RecordingSummary> {
         self.recorder.take().and_then(|mut r| r.stop())
     }

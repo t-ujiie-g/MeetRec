@@ -7,6 +7,9 @@ use crate::rules::{Observation, ScoredWindow};
 
 /// より良いウィンドウが現れてから張り替えるまでの安定待ち。
 const RETARGET_HOLD_NS: u64 = 2 * NS;
+/// 会議に入ったと分かってから、出力機器の音量を触らなくするまでの待ち（D37）。会議アプリが参加時に音量を上げるのは
+/// 入った瞬間だが、こちらが気づくのは次の確認（2 秒おき）なので、行き違わないよう少し長く取る。
+const OUTPUT_SETTLE_NS: u64 = 10 * NS;
 
 /// 会議アプリのウィンドウ構成を 1 行にまとめる（ログ用）。
 fn window_summary(obs: &Observation, app: usize) -> String {
@@ -71,6 +74,10 @@ pub(super) struct Rec {
     pub(super) screen: bool,
     /// 画面への切り替えに失敗した（この録画では再試行せず、ウィンドウの録画を続ける）。
     pub(super) screen_failed: bool,
+    /// 会議に入ったと分かった時刻（会議名の付いたウィンドウが見えた。参加前の画面には会議名が無い）。
+    pub(super) joined_since: Option<u64>,
+    /// 出力機器の音量にもう触らないと OS 層に伝えた（出力機器に触らない録画では最初から true）。
+    pub(super) output_settled: bool,
     /// 直前に記録した会議アプリのウィンドウ構成（変わったときだけログに出す）。
     pub(super) last_windows: String,
 }
@@ -83,6 +90,26 @@ impl Rec {
         if summary != self.last_windows {
             crate::info!("録画中のウィンドウ: {summary}");
             self.last_windows = summary;
+        }
+    }
+
+    /// 会議に入ってしばらく経ったら、出力機器の音量にもう触らないよう OS 層に伝える（D37）。
+    /// 会議アプリが音量を上げるのは参加の瞬間だけ（実機で確認）なので、それより後に利用者の操作を打ち消さない。
+    /// `joined`：会議名の付いたウィンドウが見えている。
+    pub(super) fn settle_output(&mut self, p: &mut dyn Platform, joined: bool, now: u64) {
+        if self.output_settled {
+            return;
+        }
+        if joined {
+            self.joined_since.get_or_insert(now);
+        }
+        if self
+            .joined_since
+            .is_some_and(|since| now.saturating_sub(since) >= OUTPUT_SETTLE_NS)
+        {
+            crate::info!("会議に入ってしばらく経ったので、以後は出力機器の音量に触りません");
+            p.settle_output();
+            self.output_settled = true;
         }
     }
 

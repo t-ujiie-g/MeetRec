@@ -64,6 +64,8 @@ pub struct Recorder {
     video: Option<Arc<VideoShared>>,
     workers: Vec<Worker>,
     root_pid: u32,
+    /// 以後、出力機器の音量を 0 に戻さない（録音スレッドが読む。D37）。
+    output_settled: Arc<AtomicBool>,
 }
 
 impl Recorder {
@@ -116,12 +118,21 @@ impl Recorder {
         let holder = Arc::new(Holder(RwLock::new(Some(session))));
         let stop = Arc::new(AtomicBool::new(false));
         let mut workers = Vec::new();
+        let output_settled = Arc::new(AtomicBool::new(false));
 
         if root_pid != 0 {
             let (h, st) = (holder.clone(), stop.clone());
-            let system_audio = req.system_audio;
+            let how = if req.system_audio {
+                audio::Loopback::System {
+                    unmute: req.unmute_output,
+                    settled: output_settled.clone(),
+                    main_hwnd,
+                }
+            } else {
+                audio::Loopback::Process
+            };
             workers.extend(spawn("loopback", move || {
-                audio::run_loopback(h, st, root_pid, system_audio, main_hwnd)
+                audio::run_loopback(h, st, root_pid, how)
             }));
         } else {
             meetrec_core::warn!("対象プロセスが不明のため相手音声は録音しません");
@@ -149,6 +160,7 @@ impl Recorder {
             video: video_shared,
             workers,
             root_pid,
+            output_settled,
         })
     }
 
@@ -179,6 +191,11 @@ impl Recorder {
     /// 自分のマイクを録る・録らないを切り替える（マイクは開いたまま、録らない間は無音にする）。
     pub fn set_mic_enabled(&self, enabled: bool) {
         self.holder.with(|s| s.set_mic_enabled(enabled));
+    }
+
+    /// 会議に入ってしばらく経った：以後、出力機器の音量を 0 に戻さない（消音を外すのは続ける）。
+    pub fn settle_output(&self) {
+        self.output_settled.store(true, Ordering::SeqCst);
     }
 
     /// 画面の録画をやめる（張り替え先のウィンドウがないとき）。
