@@ -191,7 +191,13 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     score: 80,
                     capture: true,
                     title_required: true,
-                    title_none: s(&["| Microsoft Teams", "teams.microsoft.com"]),
+                    // 「Sharing Indicator」は共有の枠。ウィンドウ単位の共有では通常の階層に出るので、
+                    // ここで会議ウィンドウと取り違えない（実機で確認。下の共有の目印の規則に当てる）。
+                    title_none: s(&[
+                        "| Microsoft Teams",
+                        "teams.microsoft.com",
+                        "Sharing Indicator",
+                    ]),
                     title_not_exact: TEAMS_TABS
                         .iter()
                         .chain(&["Microsoft Teams"])

@@ -640,6 +640,19 @@ pub(crate) mod tests {
         assert_eq!(obs.sharing_window(1).unwrap().info.id, 11);
         assert_eq!(r.score_window(1, &border), Some((40, false)));
 
+        // macOS（2026-11-24 に実機で確認）：ウィンドウ単位の共有では、枠「Sharing Indicator」が、共有している
+        // ウィンドウの大きさで、通常の階層に出る（画面全体の共有では、最前面の階層）。会議名だけのタイトルの
+        // 会議ウィンドウと取り違えず、共有の目印（枠）として扱う。
+        let m = || proc_(4, "MSTeams", Some("com.microsoft.teams2"));
+        let meeting = win(20, m(), "test", "", 1276, 797);
+        let mut frame = win(21, m(), "Sharing Indicator", "", 1200, 953);
+        (frame.x, frame.y) = (207, -980);
+        assert_eq!(r.score_window(1, &frame), Some((40, false)));
+        let obs = r.observe(&[], &[meeting.clone(), frame]);
+        let mark = obs.sharing_window(1).unwrap();
+        assert!(mark.info.id == 21 && mark.frame);
+        assert_eq!(obs.best_window(1, 40).unwrap().info.id, 20);
+
         assert_eq!(r.meeting_title(1, "test"), Some("test".into()));
         assert_eq!(r.meeting_title(1, "ミーティング"), None);
         assert_eq!(
