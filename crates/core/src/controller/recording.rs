@@ -19,12 +19,14 @@ fn window_summary(obs: &Observation, app: usize) -> String {
         .filter(|w| w.app == app)
         .map(|w| {
             format!(
-                "[id={} {:?} class={:?} {}x{} 階層={} 表示={} {}点 対象={}]",
+                "[id={} {:?} class={:?} {}x{} 位置=({},{}) 階層={} 表示={} {}点 対象={}]",
                 w.info.id,
                 w.info.title,
                 w.info.class,
                 w.info.width,
                 w.info.height,
+                w.info.x,
+                w.info.y,
                 w.info.layer,
                 !w.info.minimized,
                 w.score,
@@ -38,8 +40,8 @@ fn window_summary(obs: &Observation, app: usize) -> String {
             .filter(|(a, _)| *a == app)
             .map(|(_, w)| {
                 format!(
-                    "[id={} {:?} class={:?} {}x{} 階層={} 規則なし]",
-                    w.id, w.title, w.class, w.width, w.height, w.layer
+                    "[id={} {:?} class={:?} {}x{} 位置=({},{}) 階層={} 規則なし]",
+                    w.id, w.title, w.class, w.width, w.height, w.x, w.y, w.layer
                 )
             }),
     );
@@ -74,6 +76,8 @@ pub(super) struct Rec {
     pub(super) screen: bool,
     /// 画面への切り替えに失敗した（この録画では再試行せず、ウィンドウの録画を続ける）。
     pub(super) screen_failed: bool,
+    /// 画面を選ぶのに使った、共有の目印の（識別子・位置・大きさ）。変わったら、ディスプレイを選び直す。
+    pub(super) screen_mark: Option<(u64, i32, i32, u32, u32)>,
     /// 会議に入ったと分かった時刻（会議名の付いたウィンドウが見えた。参加前の画面には会議名が無い）。
     pub(super) joined_since: Option<u64>,
     /// 出力機器の音量にもう触らないと OS 層に伝えた（出力機器に触らない録画では最初から true）。
@@ -133,19 +137,38 @@ impl Rec {
         let sharing = obs
             .sharing_window(self.app)
             .filter(|_| enabled && !self.screen_failed);
+        let geometry = |w: &ScoredWindow| {
+            let i = &w.info;
+            (i.id, i.x, i.y, i.width, i.height)
+        };
         match sharing {
             Some(mark) if !self.screen => {
                 if p.retarget_screen(&mark.info) {
-                    crate::info!("画面共有を検出：共有中の画面の録画に切り替え");
+                    crate::info!(
+                        "画面共有を検出：共有中の画面の録画に切り替え（目印 {:?}）",
+                        mark.info.title
+                    );
                     self.screen = true;
+                    self.screen_mark = Some(geometry(mark));
                     self.candidate = None;
                 } else {
                     self.screen_failed = true;
                 }
             }
+            // 共有の目印が動いた・より確かな目印が現れた：共有しているディスプレイを選び直す。
+            // 共有の始まりは、目印がまだ別のディスプレイにあることがある。OS 層は、同じディスプレイなら何もしない。
+            Some(mark) if self.screen_mark != Some(geometry(mark)) => {
+                self.screen_mark = Some(geometry(mark));
+                if !p.retarget_screen(&mark.info) {
+                    crate::info!(
+                        "共有の目印が動いたが、ディスプレイを選び直せないので今の画面を続ける"
+                    );
+                }
+            }
             None if self.screen => {
                 // 共有が終わった：すぐに画面の録画をやめる（共有していない画面を録らない）。
                 self.screen = false;
+                self.screen_mark = None;
                 match best {
                     Some(b) => {
                         crate::info!("画面共有の終了：{:?} の録画に戻す", b.info.title);

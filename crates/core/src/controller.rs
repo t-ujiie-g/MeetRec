@@ -482,6 +482,7 @@ impl Controller {
                     audio_only_notified: false,
                     screen: false,
                     screen_failed: false,
+                    screen_mark: None,
                     joined_since: None,
                     output_settled: !req.unmute_output,
                     last_windows: String::new(),

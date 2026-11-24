@@ -110,6 +110,19 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     sharing: true,
                     ..Default::default()
                 },
+                // macOS：共有している画面（ウィンドウ単位の共有なら、そのウィンドウ）に重なる、書き込み用の透明な枠
+                // （実機で確認。共有の始まりには 10x10 で現れ、すぐ共有しているものの大きさになる）。
+                // ツールバー類より確かな目印なので、あればこちらで共有しているディスプレイを決める。
+                WindowRule {
+                    score: 40,
+                    capture: false,
+                    title_any: s(&["Annotation - Zoom"]),
+                    any_layer: true,
+                    sharing: true,
+                    min_width: 200,
+                    min_height: 200,
+                    ..Default::default()
+                },
             ],
             title_strip: s(&[]),
             generic_titles: s(&[

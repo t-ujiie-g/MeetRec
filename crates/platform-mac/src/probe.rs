@@ -267,6 +267,12 @@ impl Probe {
                     .map_or(0, |v| v.max(0.0) as u32)
             };
             let (width, height) = (dim("Width"), dim("Height"));
+            let pos = |name: &str| -> i32 {
+                bounds
+                    .as_ref()
+                    .and_then(|b| number(b, &NSString::from_str(name)))
+                    .map_or(0, |v| v as i32)
+            };
             if width == 0 || height == 0 {
                 continue;
             }
@@ -280,6 +286,8 @@ impl Probe {
                 owner,
                 title: string(&d, k_name).unwrap_or_default(),
                 class: String::new(),
+                x: pos("X"),
+                y: pos("Y"),
                 width,
                 height,
                 minimized: number(&d, k_on).unwrap_or(0.0) == 0.0,

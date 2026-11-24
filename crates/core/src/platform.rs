@@ -40,6 +40,9 @@ pub struct WindowInfo {
     pub title: String,
     /// Windows のウィンドウクラス名。macOS では空文字列。
     pub class: String,
+    /// 左上の位置（全ディスプレイを通した座標）。どのディスプレイにあるかを見分けるのに使う。
+    pub x: i32,
+    pub y: i32,
     pub width: u32,
     pub height: u32,
     pub minimized: bool,
@@ -222,6 +225,8 @@ pub trait Platform {
     fn retarget(&mut self, window: &WindowInfo);
     /// 映像を、`near` のウィンドウがあるディスプレイ全体に切り替える（自分の画面共有中）。
     /// 音声の録り方は変えない。対応していない・失敗した場合は false。
+    /// すでに画面を録っているときにも呼ばれる（共有の目印が動いたとき）。同じディスプレイなら何もせず true、
+    /// 別のディスプレイなら切り替える。決められない・失敗した場合は、今の画面を録り続けて false。
     fn retarget_screen(&mut self, near: &WindowInfo) -> bool;
     /// 画面の録画をやめる（張り替え先のウィンドウがないとき。映像は止まり、音声は続く）。
     fn end_screen(&mut self);

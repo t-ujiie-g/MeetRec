@@ -150,10 +150,16 @@ impl Observation {
     }
 
     /// 自分が画面共有中なら、その目印になるウィンドウ（映っているもの）を返す。
+    /// 目印が複数あれば、いちばん大きいものを選ぶ：共有している画面やウィンドウを囲む枠は、共有しているディスプレイに
+    /// あるが、ツールバーの類は別のディスプレイに出ることがある（共有していない画面を録らないため）。
     pub fn sharing_window(&self, app: usize) -> Option<&ScoredWindow> {
+        let area = |w: &&ScoredWindow| u64::from(w.info.width) * u64::from(w.info.height);
         self.windows
             .iter()
-            .find(|w| w.app == app && w.sharing && !w.info.minimized)
+            .filter(|w| w.app == app && w.sharing && !w.info.minimized)
+            // 同じ大きさなら、先に並んでいるほう（`max_by_key` は最後を返すので逆順にする）。
+            .rev()
+            .max_by_key(area)
     }
 
     pub fn max_score(&self, app: usize) -> Option<i32> {
@@ -363,6 +369,8 @@ pub(crate) mod tests {
             owner,
             title: title.into(),
             class: class.into(),
+            x: 0,
+            y: 0,
             width: w,
             height: h,
             minimized: false,
