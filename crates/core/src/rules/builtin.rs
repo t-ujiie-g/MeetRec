@@ -191,16 +191,12 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     score: 80,
                     capture: true,
                     title_required: true,
+                    title_none: s(&["| Microsoft Teams", "teams.microsoft.com"]),
                     // 「Sharing Indicator」は共有の枠。ウィンドウ単位の共有では通常の階層に出るので、
                     // ここで会議ウィンドウと取り違えない（実機で確認。下の共有の目印の規則に当てる）。
-                    title_none: s(&[
-                        "| Microsoft Teams",
-                        "teams.microsoft.com",
-                        "Sharing Indicator",
-                    ]),
                     title_not_exact: TEAMS_TABS
                         .iter()
-                        .chain(&["Microsoft Teams"])
+                        .chain(&["Microsoft Teams", "Sharing Indicator"])
                         .map(|t| t.to_string())
                         .collect(),
                     min_width: 200,
@@ -212,7 +208,8 @@ pub fn builtin_rules() -> Vec<AppRule> {
                 WindowRule {
                     score: 40,
                     capture: false,
-                    title_any: s(&["Sharing Indicator"]),
+                    // タイトル全体が一致するものだけ（会議名に同じ語を含む会議ウィンドウと取り違えない）。
+                    title_exact: s(&["Sharing Indicator"]),
                     any_layer: true,
                     sharing: true,
                     sharing_frame: true,

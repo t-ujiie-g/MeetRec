@@ -25,6 +25,9 @@ pub struct WindowRule {
     pub title_none: Vec<String>,
     /// タイトルがいずれかと完全に一致（大文字小文字無視）したら不一致。
     pub title_not_exact: Vec<String>,
+    /// タイトル全体が（前後の空白と大文字小文字を除いて）このどれかに等しいウィンドウだけに一致させる。空なら問わない。
+    /// 会議名など外から決められる文字列を含むタイトルと、取り違えたくない目印に使う。
+    pub title_exact: Vec<String>,
     /// タイトルが空のウィンドウには一致させない。
     pub title_required: bool,
     /// 会議ウィンドウと言い切れない、最後の受け皿の規則（Teams の「任意のウィンドウ」）。
@@ -277,6 +280,14 @@ impl Rules {
                 continue;
             }
             if r.title_required && title.trim().is_empty() {
+                continue;
+            }
+            if !r.title_exact.is_empty()
+                && !r
+                    .title_exact
+                    .iter()
+                    .any(|t| t.to_lowercase() == title.trim())
+            {
                 continue;
             }
             if r.title_not_exact
@@ -652,6 +663,11 @@ pub(crate) mod tests {
         let mark = obs.sharing_window(1).unwrap();
         assert!(mark.info.id == 21 && mark.frame);
         assert_eq!(obs.best_window(1, 40).unwrap().info.id, 20);
+        // 会議名に「Sharing Indicator」を含むだけの会議ウィンドウは、共有の目印にしない
+        // （会議名は主催者が決められる。画面全体の録画に切り替えるきっかけにさせない）。
+        let named = win(22, m(), "Sharing Indicator review", "", 1276, 797);
+        assert_eq!(r.score_window(1, &named), Some((80, true)));
+        assert!(r.observe(&[], &[named]).sharing_window(1).is_none());
 
         assert_eq!(r.meeting_title(1, "test"), Some("test".into()));
         assert_eq!(r.meeting_title(1, "ミーティング"), None);
