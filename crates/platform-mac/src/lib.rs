@@ -1,12 +1,4 @@
-//! MeetRec の macOS 層。
-//!
-//! - `app`：NSApplication・イベント配送・`Platform` 実装
-//! - `tray` / `prompt` / `notify` / `toast`：メニューバー、確認ポップアップ、通知、通知の代わりのパネル
-//! - `panel`：`prompt` と `toast` が使う、フォーカスを奪わないパネルの共通部分
-//! - `probe`：マイク使用プロセス（CoreAudio）とウィンドウ一覧（CGWindowList）
-//! - `capture` / `encoder` / `aac`：ScreenCaptureKit → VideoToolbox / AudioConverter → core::session
-//! - `ax`：会議アプリの画面部品（ミュートボタンなど）の読み取り（アクセシビリティ API）
-//! - `sys`：時計・プロセス情報・自己計測
+//! MeetRec の macOS 層（ファイルの役割は AGENTS.md の「構成」と各ファイルの先頭）。
 #![cfg(target_os = "macos")]
 
 mod aac;

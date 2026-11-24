@@ -515,6 +515,79 @@ fn own_screen_share_records_the_screen_and_returns_to_the_meeting() {
 }
 
 #[test]
+fn shared_display_follows_the_frame_around_the_shared_window() {
+    // macOS の Zoom で、外付けディスプレイにあるウィンドウを共有した（2026-11-24 に実機で確認したウィンドウ構成）。
+    // ツールバー類は共有していない側のディスプレイに出ることがあるので、共有しているものを囲む枠で画面を決める。
+    let mut h = H::new("ctl-share-frame", Mode::Auto);
+    h.p.screen_ok = true;
+    h.join();
+    h.ticks(3);
+    let layered = |id, title: &str, w, h, layer, at: (i32, i32)| {
+        let mut x = win(id, zoom(), title, "", w, h);
+        x.layer = layer;
+        (x.x, x.y) = at;
+        x
+    };
+    let mut hidden = meeting_win();
+    hidden.minimized = true;
+    let float = layered(5, "zoom floating video window", 244, 169, 26, (1428, 50));
+    let toolbar = layered(12, "zoom share toolbar window", 900, 57, 97, (400, 0));
+    let status = layered(13, "zoom share statusbar window", 324, 156, 97, (700, 0));
+    // 共有の始まり：枠はまだ 10x10 で、目印に使えるのはツールバー類だけ。
+    let frame0 = layered(14, "Annotation - Zoom", 10, 10, 96, (0, 0));
+    h.p.windows = vec![
+        hidden.clone(),
+        float.clone(),
+        toolbar.clone(),
+        status.clone(),
+        frame0,
+    ];
+    h.tick();
+    assert_eq!(h.count("screen 12"), 1);
+    // 枠が共有しているウィンドウの大きさになった：枠のあるディスプレイを選び直す。
+    let frame = layered(14, "Annotation - Zoom", 1920, 1040, 96, (0, -1040));
+    h.p.windows = vec![hidden.clone(), float.clone(), status.clone(), frame.clone()];
+    h.tick();
+    assert_eq!(h.count("screen 14"), 1);
+    // 目印が動かなければ、選び直さない。ツールバー類の出入りや伸び縮みでも選び直さない（枠のほうが大きい）。
+    let mut status_small = status.clone();
+    status_small.height = 22;
+    h.p.windows = vec![hidden.clone(), float.clone(), status_small, frame.clone()];
+    h.ticks(5);
+    assert_eq!(h.count("screen"), 2);
+    // 共有しているウィンドウを別のディスプレイへ動かした：選び直す。
+    let mut moved = frame;
+    (moved.x, moved.y) = (0, 34);
+    h.p.windows = vec![hidden.clone(), float.clone(), status, moved];
+    h.tick();
+    assert_eq!(h.count("screen 14"), 2);
+    // 画面を録っている間はビデオパネルへ張り替えない。
+    assert_eq!(h.count("retarget"), 0);
+    // 枠が一時的に消えても、ツールバー類では選び直さない（枠で決めた画面を続ける）。
+    h.p.windows = vec![hidden.clone(), float.clone(), toolbar.clone()];
+    h.ticks(4);
+    assert_eq!(h.count("screen"), 3);
+    // 枠が見えないままの状態が続いたら（10 秒）、残っている目印で選び直す（古い画面を録り続けない）。
+    h.tick();
+    assert_eq!(h.count("screen 12"), 2);
+    // 選び直しに失敗：次の確認でもう一度試す。3 回続いたら、共有していない画面を録り続けないよう、
+    // ウィンドウの録画に戻し、この録画ではもう画面に切り替えない。
+    h.p.screen_ok = false;
+    let back = layered(14, "Annotation - Zoom", 1920, 1040, 96, (0, -1040));
+    h.p.windows = vec![hidden, float, back];
+    h.ticks(2);
+    assert_eq!(h.count("screen 14"), 4);
+    assert_eq!(h.count("retarget"), 0);
+    h.tick();
+    assert_eq!(h.count("screen 14"), 5);
+    assert_eq!(h.count("retarget 5"), 1);
+    h.p.screen_ok = true;
+    h.ticks(3);
+    assert_eq!(h.count("screen 14"), 5);
+    assert!(h.c.is_recording());
+}
+
+#[test]
 fn leaving_while_sharing_stops_recording_the_screen_at_once() {
     let mut h = H::new("ctl-share-leave", Mode::Auto);
     h.p.screen_ok = true;

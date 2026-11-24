@@ -14,7 +14,7 @@ use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetClientRect, GetWindowPlacement, GetWindowTextW,
+    EnumWindows, GetClassNameW, GetClientRect, GetWindowPlacement, GetWindowRect, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, WINDOWPLACEMENT,
 };
 use windows::core::{BOOL, Interface, PCWSTR, w};
@@ -160,6 +160,9 @@ impl Probe {
                     .entry(pid)
                     .or_insert_with(|| sys::process_name(pid).unwrap_or_default())
                     .clone();
+                // 読めなければ (0,0) のまま。
+                let mut frame = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut frame);
                 ctx.out.push(WindowInfo {
                     id: hwnd.0 as usize as u64,
                     owner: ProcInfo {
@@ -169,6 +172,8 @@ impl Probe {
                     },
                     title,
                     class,
+                    x: frame.left,
+                    y: frame.top,
                     width,
                     height,
                     minimized,

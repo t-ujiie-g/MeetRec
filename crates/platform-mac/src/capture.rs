@@ -35,7 +35,7 @@ use objc2_core_media::{CMAudioFormatDescriptionGetStreamBasicDescription, CMSamp
 use objc2_core_video::kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
 use objc2_foundation::{NSArray, NSError};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCFrameStatus, SCShareableContent, SCStream, SCStreamConfiguration,
+    SCContentFilter, SCDisplay, SCFrameStatus, SCShareableContent, SCStream, SCStreamConfiguration,
     SCStreamDelegate, SCStreamFrameInfoStatus, SCStreamOutput, SCStreamOutputType, SCWindow,
 };
 
@@ -106,16 +106,10 @@ fn window_filter(window: &SCWindow) -> Retained<SCContentFilter> {
     unsafe { SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), window) }
 }
 
-/// ディスプレイ全体を録るフィルタ（自分の画面共有中）。`near` のウィンドウがあるディスプレイを選ぶ。
-/// どのディスプレイか決められないときは失敗にする（共有していない画面を録らないため。呼び出し側は
-/// ウィンドウの録画を続ける）。MeetRec 自身のパネルは映さない。
-fn display_filter(
-    content: &SCShareableContent,
-    near: u64,
-) -> Result<Retained<SCContentFilter>, String> {
+/// `near`（共有の目印）があるディスプレイ。決められなければ失敗にする（共有していない画面を録らないため）。
+fn display_of(content: &SCShareableContent, near: u64) -> Result<Retained<SCDisplay>, String> {
     // SAFETY: 取得済みの不変オブジェクトを読むだけ。
     unsafe {
-        let displays = content.displays();
         let mark = find_window(content, near)
             .ok_or("共有の目印のウィンドウが共有可能一覧にありません")?
             .frame();
@@ -123,7 +117,8 @@ fn display_filter(
             mark.origin.x + mark.size.width / 2.0,
             mark.origin.y + mark.size.height / 2.0,
         );
-        let display = displays
+        content
+            .displays()
             .iter()
             .find(|d| {
                 let f = d.frame();
@@ -132,20 +127,25 @@ fn display_filter(
                     && y >= f.origin.y
                     && y < f.origin.y + f.size.height
             })
-            .ok_or("共有しているディスプレイを特定できません")?;
+            .ok_or("共有しているディスプレイを特定できません".into())
+    }
+}
+
+/// ディスプレイ全体を録るフィルタ（自分の画面共有中）。MeetRec 自身のパネルは映さない。
+fn display_filter(content: &SCShareableContent, display: &SCDisplay) -> Retained<SCContentFilter> {
+    // SAFETY: 取得済みの不変オブジェクトを読むだけ。
+    unsafe {
         let me = sys::own_pid();
         let own: Vec<_> = content
             .applications()
             .iter()
             .filter(|a| a.processID() as u32 == me)
             .collect();
-        Ok(
-            SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
-                SCContentFilter::alloc(),
-                &display,
-                &NSArray::from_retained_slice(&own),
-                &NSArray::new(),
-            ),
+        SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
+            SCContentFilter::alloc(),
+            display,
+            &NSArray::from_retained_slice(&own),
+            &NSArray::new(),
         )
     }
 }
@@ -424,6 +424,8 @@ struct ScreenCapture {
     // SCStream は出力先を弱く持つので保持しておく。
     _output: Retained<StreamOutput>,
     stopped: Arc<AtomicBool>,
+    /// 録っているディスプレイ（CGDirectDisplayID）。
+    display: u32,
 }
 
 pub struct Recorder {
@@ -688,13 +690,23 @@ impl Recorder {
 
     /// 映像を `near` のウィンドウがあるディスプレイ全体に切り替える（自分の画面共有中）。
     /// 音声はこれまでのストリームで録り続け、映像だけを別のストリームから取る。
+    /// すでに同じディスプレイを録っていれば何もしない。失敗したときは、今の画面を録り続けて false。
     pub fn show_screen(&mut self, near: &WindowInfo) -> bool {
         if self.audio_only {
             return false;
         }
-        self.hide_screen();
         let result = shareable_content().and_then(|content| {
-            let filter = display_filter(&content, near.id)?;
+            let display = display_of(&content, near.id)?;
+            // SAFETY: 取得済みの不変オブジェクトを読むだけ。
+            let id = unsafe { display.displayID() };
+            if self
+                .screen
+                .as_ref()
+                .is_some_and(|s| s.display == id && !s.stopped.load(Ordering::SeqCst))
+            {
+                return Ok(None);
+            }
+            let filter = display_filter(&content, &display);
             let config = self.configuration(true);
             let stopped = Arc::new(AtomicBool::new(false));
             let output = StreamOutput::new(self.slot.clone(), stopped.clone(), true);
@@ -706,14 +718,18 @@ impl Recorder {
             }
             let kinds = [SCStreamOutputType::Screen];
             let stream = open_stream(&filter, &config, &output, &kinds, &self.queue)?;
-            Ok(ScreenCapture {
+            Ok(Some(ScreenCapture {
                 stream,
                 _output: output,
                 stopped,
-            })
+                display: id,
+            }))
         });
         match result {
-            Ok(screen) => {
+            Ok(None) => true,
+            Ok(Some(screen)) => {
+                self.hide_screen();
+                meetrec_core::info!("画面の録画：ディスプレイ {} に切り替え", screen.display);
                 self.screen = Some(screen);
                 self.use_screen(true);
                 true

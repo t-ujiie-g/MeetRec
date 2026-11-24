@@ -482,6 +482,9 @@ impl Controller {
                     audio_only_notified: false,
                     screen: false,
                     screen_failed: false,
+                    screen_mark: None,
+                    screen_reselect_failures: 0,
+                    frame_missing: 0,
                     joined_since: None,
                     output_settled: !req.unmute_output,
                     last_windows: String::new(),
@@ -731,7 +734,6 @@ impl Controller {
                     self.notify(p, text::NOTICE_AUDIO_ONLY, None);
                 }
             }
-            // PC の設定を変えたことは、そのつど知らせる（OS 層は実際に切り替えたときだけ送る）。
             RecorderEvent::OutputUnmuted => {
                 if self.rec.is_some() {
                     self.notify(p, text::NOTICE_OUTPUT_UNMUTED, None);

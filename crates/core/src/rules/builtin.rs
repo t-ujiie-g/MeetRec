@@ -110,6 +110,18 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     sharing: true,
                     ..Default::default()
                 },
+                // macOS：共有している画面やウィンドウに重なる透明な枠（実機で確認。共有の始まりは 10x10 で現れる）。
+                WindowRule {
+                    score: 40,
+                    capture: false,
+                    title_any: s(&["Annotation - Zoom"]),
+                    any_layer: true,
+                    sharing: true,
+                    sharing_frame: true,
+                    min_width: 200,
+                    min_height: 200,
+                    ..Default::default()
+                },
             ],
             title_strip: s(&[]),
             generic_titles: s(&[
@@ -178,9 +190,10 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     capture: true,
                     title_required: true,
                     title_none: s(&["| Microsoft Teams", "teams.microsoft.com"]),
+                    // 「Sharing Indicator」（共有の枠）は、ウィンドウ単位の共有では通常の階層に出る（実機で確認）。
                     title_not_exact: TEAMS_TABS
                         .iter()
-                        .chain(&["Microsoft Teams"])
+                        .chain(&["Microsoft Teams", "Sharing Indicator"])
                         .map(|t| t.to_string())
                         .collect(),
                     min_width: 200,
@@ -192,9 +205,11 @@ pub fn builtin_rules() -> Vec<AppRule> {
                 WindowRule {
                     score: 40,
                     capture: false,
-                    title_any: s(&["Sharing Indicator"]),
+                    // 会議名に同じ語を含む会議ウィンドウと取り違えないよう、全体の一致で見る。
+                    title_exact: s(&["Sharing Indicator"]),
                     any_layer: true,
                     sharing: true,
+                    sharing_frame: true,
                     ..Default::default()
                 },
                 // Windows：自分が画面共有している間、共有している画面を囲む枠（タイトルは空。実機のログで確認）。
@@ -203,6 +218,7 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     capture: false,
                     class_any: s(&["ScreenBorderWindow"]),
                     sharing: true,
+                    sharing_frame: true,
                     ..Default::default()
                 },
                 // フォールバック：Teams の任意のウィンドウ。

@@ -40,6 +40,9 @@ pub struct WindowInfo {
     pub title: String,
     /// Windows のウィンドウクラス名。macOS では空文字列。
     pub class: String,
+    /// 左上の位置（全ディスプレイを通した座標）。
+    pub x: i32,
+    pub y: i32,
     pub width: u32,
     pub height: u32,
     pub minimized: bool,
@@ -127,8 +130,7 @@ pub enum RecorderEvent {
     Failed(String),
     /// 映像が取得できない（キャプチャ保護・権限なし等）。音声のみで継続中。
     VideoUnavailable(String),
-    /// Windows：消音だった出力機器を、消音を外して音量 0 に切り替えた（`RecordRequest::system_audio` の録画。
-    /// 録画が終わったら OS 層が元に戻す）。
+    /// Windows：出力機器の消音を外して音量 0 に切り替えた（録画が終わったら OS 層が元に戻す）。
     OutputUnmuted,
 }
 
@@ -171,8 +173,7 @@ pub struct RecordRequest {
     pub root_pid: Pid,
     /// Windows：会議アプリの音だけでなく、PC から出る音すべてを録る（`AppRule::system_audio`）。
     pub system_audio: bool,
-    /// Windows：`system_audio` の録画で、出力機器が消音のあいだは、消音を外して音量を 0 にする（D37。
-    /// 設定 `audio.unmute_output`）。false なら出力機器の設定に触らない。
+    /// Windows：`system_audio` の録画で、出力機器が消音なら、消音を外して音量を 0 にする（D37）。
     pub unmute_output: bool,
     pub settings: RecordSettings,
 }
@@ -222,6 +223,7 @@ pub trait Platform {
     fn retarget(&mut self, window: &WindowInfo);
     /// 映像を、`near` のウィンドウがあるディスプレイ全体に切り替える（自分の画面共有中）。
     /// 音声の録り方は変えない。対応していない・失敗した場合は false。
+    /// 画面を録っている間にも呼ばれる（共有の目印が動いたとき）。失敗した場合は、今の画面を録り続けて false。
     fn retarget_screen(&mut self, near: &WindowInfo) -> bool;
     /// 画面の録画をやめる（張り替え先のウィンドウがないとき。映像は止まり、音声は続く）。
     fn end_screen(&mut self);
@@ -232,8 +234,7 @@ pub trait Platform {
     /// 録画中に、自分のマイクを録る・録らないを切り替える（録らない間は無音になる）。
     /// 録画中でない・マイクを開いていない場合は何もしない。
     fn set_mic_enabled(&mut self, enabled: bool);
-    /// 会議に入ってしばらく経った。以後、この録画では出力機器の音量を 0 に戻さない（`RecordRequest::unmute_output`
-    /// の録画。消音を外すのは続ける。D37）。出力機器に触らない OS 層は何もしない。
+    /// 会議に入ってしばらく経った。以後、この録画では出力機器の音量を 0 に戻さない（D38）。
     fn settle_output(&mut self);
     /// 同期的に確定して結果を返す。録画中でなければ None。
     fn stop_recording(&mut self) -> Option<RecordingSummary>;

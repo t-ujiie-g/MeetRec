@@ -193,8 +193,8 @@ impl Recorder {
         self.holder.with(|s| s.set_mic_enabled(enabled));
     }
 
-    /// 会議に入ってしばらく経った：以後、出力機器の音量を 0 に戻さない（消音を外すのは続ける）。
     pub fn settle_output(&self) {
+        meetrec_core::info!("会議に入ってしばらく経ったので、以後は出力機器の音量に触りません");
         self.output_settled.store(true, Ordering::SeqCst);
     }
 

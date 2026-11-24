@@ -25,6 +25,8 @@ pub struct WindowRule {
     pub title_none: Vec<String>,
     /// タイトルがいずれかと完全に一致（大文字小文字無視）したら不一致。
     pub title_not_exact: Vec<String>,
+    /// タイトル全体が（空白と大文字小文字を除いて）このどれかに等しいものだけに一致させる。空なら問わない。
+    pub title_exact: Vec<String>,
     /// タイトルが空のウィンドウには一致させない。
     pub title_required: bool,
     /// 会議ウィンドウと言い切れない、最後の受け皿の規則（Teams の「任意のウィンドウ」）。
@@ -38,6 +40,8 @@ pub struct WindowRule {
     /// 自分が画面共有している間だけ現れるウィンドウ（共有ツールバー等）。
     /// 映っていれば「共有中」とみなし、共有している画面の録画に切り替える（D31）。
     pub sharing: bool,
+    /// `sharing` の目印のうち、共有しているものを囲む枠。ツールバーの類より優先してディスプレイを決める（D39）。
+    pub sharing_frame: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -106,6 +110,8 @@ pub struct ScoredWindow {
     pub capture: bool,
     /// 自分が画面共有中であることを示すウィンドウ（`WindowRule::sharing`）。
     pub sharing: bool,
+    /// `WindowRule::sharing_frame`。
+    pub frame: bool,
     /// 会議ウィンドウ（またはその代わり）と言い切れるウィンドウ。受け皿の規則
     /// （`WindowRule::fallback`）にしか一致しなかったものは false。
     pub definite: bool,
@@ -150,10 +156,16 @@ impl Observation {
     }
 
     /// 自分が画面共有中なら、その目印になるウィンドウ（映っているもの）を返す。
+    /// 複数あれば、枠（`frame`）を優先し、その中でいちばん大きいものを選ぶ（D39）。
     pub fn sharing_window(&self, app: usize) -> Option<&ScoredWindow> {
+        let rank =
+            |w: &&ScoredWindow| (w.frame, u64::from(w.info.width) * u64::from(w.info.height));
         self.windows
             .iter()
-            .find(|w| w.app == app && w.sharing && !w.info.minimized)
+            .filter(|w| w.app == app && w.sharing && !w.info.minimized)
+            // 同じ順位なら、先に並んでいるほう（`max_by_key` は最後を返すので逆順にする）。
+            .rev()
+            .max_by_key(rank)
     }
 
     pub fn max_score(&self, app: usize) -> Option<i32> {
@@ -266,6 +278,14 @@ impl Rules {
             if r.title_required && title.trim().is_empty() {
                 continue;
             }
+            if !r.title_exact.is_empty()
+                && !r
+                    .title_exact
+                    .iter()
+                    .any(|t| t.to_lowercase() == title.trim())
+            {
+                continue;
+            }
             if r.title_not_exact
                 .iter()
                 .any(|t| t.to_lowercase() == title.trim())
@@ -301,6 +321,7 @@ impl Rules {
                     score: rule.score,
                     capture: rule.capture,
                     sharing: rule.sharing,
+                    frame: rule.sharing && rule.sharing_frame,
                     definite: !rule.fallback,
                     info: w.clone(),
                 }),
@@ -363,6 +384,8 @@ pub(crate) mod tests {
             owner,
             title: title.into(),
             class: class.into(),
+            x: 0,
+            y: 0,
             width: w,
             height: h,
             minimized: false,
@@ -623,6 +646,24 @@ pub(crate) mod tests {
         let obs = r.observe(&[], &[hidden, border.clone(), compact]);
         assert_eq!(obs.sharing_window(1).unwrap().info.id, 11);
         assert_eq!(r.score_window(1, &border), Some((40, false)));
+
+        // macOS（2026-11-24 に実機で確認）：ウィンドウ単位の共有では、枠「Sharing Indicator」が、共有している
+        // ウィンドウの大きさで、通常の階層に出る（画面全体の共有では、最前面の階層）。会議名だけのタイトルの
+        // 会議ウィンドウと取り違えず、共有の目印（枠）として扱う。
+        let m = || proc_(4, "MSTeams", Some("com.microsoft.teams2"));
+        let meeting = win(20, m(), "test", "", 1276, 797);
+        let mut frame = win(21, m(), "Sharing Indicator", "", 1200, 953);
+        (frame.x, frame.y) = (207, -980);
+        assert_eq!(r.score_window(1, &frame), Some((40, false)));
+        let obs = r.observe(&[], &[meeting.clone(), frame]);
+        let mark = obs.sharing_window(1).unwrap();
+        assert!(mark.info.id == 21 && mark.frame);
+        assert_eq!(obs.best_window(1, 40).unwrap().info.id, 20);
+        // 会議名に「Sharing Indicator」を含むだけの会議ウィンドウは、共有の目印にしない
+        // （会議名は主催者が決められる。画面全体の録画に切り替えるきっかけにさせない）。
+        let named = win(22, m(), "Sharing Indicator review", "", 1276, 797);
+        assert_eq!(r.score_window(1, &named), Some((80, true)));
+        assert!(r.observe(&[], &[named]).sharing_window(1).is_none());
 
         assert_eq!(r.meeting_title(1, "test"), Some("test".into()));
         assert_eq!(r.meeting_title(1, "ミーティング"), None);

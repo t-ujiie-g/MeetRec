@@ -159,8 +159,9 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
         let mut converter = Converter::new(&device, &context, canvas, fps)?;
         let winrt_device: IDirect3DDevice =
             CreateDirect3D11DeviceFromDXGIDevice(&device.cast::<IDXGIDevice>()?)?.cast()?;
+        let mut current = Target::Window(params.hwnd);
         let mut capture = Some(Capture::start(
-            Target::Window(params.hwnd),
+            current,
             &winrt_device,
             s.show_cursor,
             fps,
@@ -208,6 +209,7 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
                     // 新しい対象を取り込めたときだけ入れ替える（エンコーダは継続）。取り込めないウィンドウ
                     // （Zoom の共有中のビデオパネルや Teams のコンパクト ビューで実機発生）へ張り替えようとして、
                     // それまでの映像まで失わないようにする。
+                    // 今の対象がモニター全体なら続けない（続けると、共有していない画面を録ることになる。D39）。
                     Some(target) => match Capture::start(
                         target,
                         &winrt_device,
@@ -219,6 +221,14 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
                             meetrec_core::info!("キャプチャ対象を張り替えました: {target:x?}");
                             // 古いキャプチャはここで閉じられる。残っている古いフレームは捨てる。
                             capture = Some(c);
+                            current = target;
+                            shared.queue.clear();
+                        }
+                        Err(e) if matches!(current, Target::Monitor(_)) => {
+                            meetrec_core::warn!(
+                                "張り替え先をキャプチャできません（画面の取り込みをやめます）: {target:x?} {e}"
+                            );
+                            capture = None;
                             shared.queue.clear();
                         }
                         Err(e) => meetrec_core::warn!(
