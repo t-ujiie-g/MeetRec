@@ -159,7 +159,6 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
         let mut converter = Converter::new(&device, &context, canvas, fps)?;
         let winrt_device: IDirect3DDevice =
             CreateDirect3D11DeviceFromDXGIDevice(&device.cast::<IDXGIDevice>()?)?.cast()?;
-        // 今取り込んでいる対象（張り替えに失敗したときの扱いを決めるのに使う）。
         let mut current = Target::Window(params.hwnd);
         let mut capture = Some(Capture::start(
             current,
@@ -210,8 +209,7 @@ unsafe fn run_inner(holder: &Holder, shared: &VideoShared, params: &Params) -> W
                     // 新しい対象を取り込めたときだけ入れ替える（エンコーダは継続）。取り込めないウィンドウ
                     // （Zoom の共有中のビデオパネルや Teams のコンパクト ビューで実機発生）へ張り替えようとして、
                     // それまでの映像まで失わないようにする。
-                    // ただし、今の対象がモニター全体なら続けない：張り替えの指示が来たのは、共有が終わったか、
-                    // 共有しているモニターが変わったからで、続けると共有していない画面を録ることになる。
+                    // 今の対象がモニター全体なら続けない（続けると、共有していない画面を録ることになる。D39）。
                     Some(target) => match Capture::start(
                         target,
                         &winrt_device,

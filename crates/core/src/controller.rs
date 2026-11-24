@@ -734,7 +734,6 @@ impl Controller {
                     self.notify(p, text::NOTICE_AUDIO_ONLY, None);
                 }
             }
-            // PC の設定を変えたことは、そのつど知らせる（OS 層は実際に切り替えたときだけ送る）。
             RecorderEvent::OutputUnmuted => {
                 if self.rec.is_some() {
                     self.notify(p, text::NOTICE_OUTPUT_UNMUTED, None);

@@ -25,8 +25,7 @@ pub struct WindowRule {
     pub title_none: Vec<String>,
     /// タイトルがいずれかと完全に一致（大文字小文字無視）したら不一致。
     pub title_not_exact: Vec<String>,
-    /// タイトル全体が（前後の空白と大文字小文字を除いて）このどれかに等しいウィンドウだけに一致させる。空なら問わない。
-    /// 会議名など外から決められる文字列を含むタイトルと、取り違えたくない目印に使う。
+    /// タイトル全体が（空白と大文字小文字を除いて）このどれかに等しいものだけに一致させる。空なら問わない。
     pub title_exact: Vec<String>,
     /// タイトルが空のウィンドウには一致させない。
     pub title_required: bool,
@@ -41,8 +40,7 @@ pub struct WindowRule {
     /// 自分が画面共有している間だけ現れるウィンドウ（共有ツールバー等）。
     /// 映っていれば「共有中」とみなし、共有している画面の録画に切り替える（D31）。
     pub sharing: bool,
-    /// `sharing` の目印のうち、共有している画面やウィンドウを囲む枠（共有しているディスプレイに必ずある）。
-    /// ツールバーの類（別のディスプレイに出ることがある）より優先して、録るディスプレイを決める。
+    /// `sharing` の目印のうち、共有しているものを囲む枠。ツールバーの類より優先してディスプレイを決める（D39）。
     pub sharing_frame: bool,
 }
 
@@ -112,7 +110,7 @@ pub struct ScoredWindow {
     pub capture: bool,
     /// 自分が画面共有中であることを示すウィンドウ（`WindowRule::sharing`）。
     pub sharing: bool,
-    /// 共有しているもの（画面やウィンドウ）を囲む枠（`WindowRule::sharing_frame`）。
+    /// `WindowRule::sharing_frame`。
     pub frame: bool,
     /// 会議ウィンドウ（またはその代わり）と言い切れるウィンドウ。受け皿の規則
     /// （`WindowRule::fallback`）にしか一致しなかったものは false。
@@ -158,9 +156,7 @@ impl Observation {
     }
 
     /// 自分が画面共有中なら、その目印になるウィンドウ（映っているもの）を返す。
-    /// 目印が複数あれば、共有しているものを囲む枠（`frame`）を優先し、その中でいちばん大きいものを選ぶ：
-    /// 枠は共有しているディスプレイにあるが、ツールバーの類は別のディスプレイに出ることがある
-    /// （共有していない画面を録らないため）。
+    /// 複数あれば、枠（`frame`）を優先し、その中でいちばん大きいものを選ぶ（D39）。
     pub fn sharing_window(&self, app: usize) -> Option<&ScoredWindow> {
         let rank =
             |w: &&ScoredWindow| (w.frame, u64::from(w.info.width) * u64::from(w.info.height));

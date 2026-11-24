@@ -301,9 +301,7 @@ unsafe fn process_loopback_once(pid: u32, holder: &Holder, stop: &AtomicBool) ->
     }
 }
 
-/// 出力機器の音量の変化を受け取り、「0 から一気に上がった」（`output::is_jump`）ことと、
-/// 「利用者が自分で音量を決めた」（`output::is_user_set`）ことだけを覚える。
-/// 通知は OS のスレッドで届くので、ここでは印を付けるだけにして、音量の操作は録音スレッドでする。
+/// 出力機器の音量の変化の通知。OS のスレッドで届くので印を付けるだけにして、音量の操作は録音スレッドでする。
 #[implement(IAudioEndpointVolumeCallback)]
 struct VolumeJump(Arc<JumpState>);
 
@@ -332,13 +330,13 @@ impl IAudioEndpointVolumeCallback_Impl for VolumeJump_Impl {
     }
 }
 
-/// 録っている出力機器の消音と音量。いつ・何をするかは `core::output` が決め、ここは機器を読み書きする（D37）。
+/// 録っている出力機器の消音と音量（判断は `core::output`。D37）。
 struct OutputVolume {
     volume: IAudioEndpointVolume,
     state: OutputUnmute,
     jump: Arc<JumpState>,
     callback: IAudioEndpointVolumeCallback,
-    /// 会議に入ってしばらく経った（`Recorder::settle_output`）。以後は音量を 0 に戻さない。
+    /// `Recorder::settle_output` が立てる。
     settled: Arc<AtomicBool>,
 }
 
@@ -364,14 +362,13 @@ impl OutputVolume {
         }
     }
 
-    /// 会議に入ってしばらく経っていたら、`core::output` に伝える（以後は音量を戻さない）。
     fn sync_settled(&mut self) {
         if self.settled.load(Ordering::SeqCst) {
             self.state.settle();
         }
     }
 
-    /// 消音なら、音量を 0 にしてから消音を外す。切り替えたら true。
+    /// 消音なら外して音量を 0 にする。切り替えたら true。
     unsafe fn unmute_if_muted(&mut self) -> WinResult<bool> {
         unsafe {
             if !self.volume.GetMute()?.as_bool() {
@@ -382,7 +379,7 @@ impl OutputVolume {
             self.volume
                 .SetMasterVolumeLevelScalar(0.0, std::ptr::null())?;
             self.volume.SetMute(false, std::ptr::null())?;
-            // 消音にする前の利用者の操作は、数えない（ここから数え直す）。
+            // 消音にする前の利用者の操作は数えない。
             self.jump.user_set.store(false, Ordering::SeqCst);
             self.jump.jumped.store(false, Ordering::SeqCst);
             self.sync_settled();
@@ -391,10 +388,9 @@ impl OutputVolume {
         }
     }
 
-    /// 音量が 0 から一気に上げられていたら、`core::output` の決まりに従って 0 に戻す。
+    /// 音量が一気に上げられていたら、`core::output` の決まりに従って 0 に戻す。
     unsafe fn revert_jump(&mut self) {
         self.sync_settled();
-        // 利用者が自分で音量を決めていたら、以後は触らない（参加前に、聞くつもりで上げた場合など）。
         if self.jump.user_set.swap(false, Ordering::SeqCst) {
             self.state.user_set();
         }
@@ -412,7 +408,7 @@ impl OutputVolume {
         }
     }
 
-    /// 音量の変化の受け取りをやめ、消音と音量を元に戻す（利用者が自分で音量を上げていたら、戻さない）。
+    /// 通知の受け取りをやめ、`core::output` の決まりに従って元に戻す。
     unsafe fn finish(&mut self) {
         unsafe {
             let _ = self.volume.UnregisterControlChangeNotify(&self.callback);
@@ -481,8 +477,7 @@ unsafe fn system_loopback_once(
         init?;
         let format = format.unwrap();
         meetrec_core::info!("相手音声のキャプチャ開始（PC から出る音すべて）: {format:?}");
-        // 消音を外せなくても（機器が対応していないなど）、録音は続ける。
-        // 設定（`audio.unmute_output = false`）で止められているときは、出力機器の設定を読みも書きもしない。
+        // 消音を外せなくても録音は続ける。設定で止められているときは、出力機器の設定に触らない。
         let mut endpoint = if unmute {
             device
                 .Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None)
@@ -534,9 +529,8 @@ pub enum Loopback {
     Process,
     /// PC から出る音すべて（プロセス単位では録れないアプリ用。D36）。
     System {
-        /// 出力機器が消音なら、消音を外して音量を 0 にする（D37）。
+        /// 出力機器が消音なら外す（D37）。
         unmute: bool,
-        /// 会議に入ってしばらく経った（以後は音量を 0 に戻さない）。
         settled: Arc<AtomicBool>,
         /// 消音を外したことを知らせる先。
         main_hwnd: isize,

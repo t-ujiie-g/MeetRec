@@ -106,8 +106,7 @@ fn window_filter(window: &SCWindow) -> Retained<SCContentFilter> {
     unsafe { SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), window) }
 }
 
-/// `near` のウィンドウ（共有の目印）があるディスプレイを選ぶ。どのディスプレイか決められないときは失敗にする
-/// （共有していない画面を録らないため）。
+/// `near`（共有の目印）があるディスプレイ。決められなければ失敗にする（共有していない画面を録らないため）。
 fn display_of(content: &SCShareableContent, near: u64) -> Result<Retained<SCDisplay>, String> {
     // SAFETY: 取得済みの不変オブジェクトを読むだけ。
     unsafe {
@@ -691,8 +690,7 @@ impl Recorder {
 
     /// 映像を `near` のウィンドウがあるディスプレイ全体に切り替える（自分の画面共有中）。
     /// 音声はこれまでのストリームで録り続け、映像だけを別のストリームから取る。
-    /// すでに画面を録っているとき：同じディスプレイなら何もしない。別のディスプレイなら切り替える。
-    /// ディスプレイを決められない・開けないときは、今の画面を録り続けて false を返す。
+    /// すでに同じディスプレイを録っていれば何もしない。失敗したときは、今の画面を録り続けて false。
     pub fn show_screen(&mut self, near: &WindowInfo) -> bool {
         if self.audio_only {
             return false;
@@ -730,7 +728,6 @@ impl Recorder {
         match result {
             Ok(None) => true,
             Ok(Some(screen)) => {
-                // 前の画面（別のディスプレイ）を止めてから、新しい画面に替える。
                 self.hide_screen();
                 meetrec_core::info!("画面の録画：ディスプレイ {} に切り替え", screen.display);
                 self.screen = Some(screen);

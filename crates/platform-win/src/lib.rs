@@ -1,13 +1,5 @@
 #![cfg(windows)]
-//! MeetRec の Windows 層。
-//!
-//! - `app`：メッセージループ、イベント配送、`Platform` 実装
-//! - `tray` / `prompt`：トレイアイコン・メニュー・通知、確認ポップアップ
-//! - `probe`：マイク使用プロセスとウィンドウの観測
-//! - `recorder`：録画の開始・停止（`video` / `audio` スレッドの管理）
-//! - `capture` / `convert` / `h264enc`：WGC → D3D11 Video Processor → H.264 MFT
-//! - `uia`：会議アプリの画面部品（ミュートボタンなど）の読み取り（UI オートメーション）
-//! - `audio` / `aac`：WASAPI（プロセスループバック・マイク）と AAC MFT
+//! MeetRec の Windows 層（ファイルの役割は AGENTS.md の「構成」と各ファイルの先頭）。
 
 mod aac;
 mod app;

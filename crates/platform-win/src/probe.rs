@@ -160,7 +160,7 @@ impl Probe {
                     .entry(pid)
                     .or_insert_with(|| sys::process_name(pid).unwrap_or_default())
                     .clone();
-                // 画面上の位置（どのモニターにあるかを見分ける用）。読めなければ 0。
+                // 読めなければ (0,0) のまま。
                 let mut frame = RECT::default();
                 let _ = GetWindowRect(hwnd, &mut frame);
                 ctx.out.push(WindowInfo {

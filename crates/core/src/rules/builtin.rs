@@ -110,9 +110,7 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     sharing: true,
                     ..Default::default()
                 },
-                // macOS：共有している画面（ウィンドウ単位の共有なら、そのウィンドウ）に重なる、書き込み用の透明な枠
-                // （実機で確認。共有の始まりには 10x10 で現れ、すぐ共有しているものの大きさになる）。
-                // ツールバー類より確かな目印なので、あればこちらで共有しているディスプレイを決める。
+                // macOS：共有している画面やウィンドウに重なる透明な枠（実機で確認。共有の始まりは 10x10 で現れる）。
                 WindowRule {
                     score: 40,
                     capture: false,
@@ -192,8 +190,7 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     capture: true,
                     title_required: true,
                     title_none: s(&["| Microsoft Teams", "teams.microsoft.com"]),
-                    // 「Sharing Indicator」は共有の枠。ウィンドウ単位の共有では通常の階層に出るので、
-                    // ここで会議ウィンドウと取り違えない（実機で確認。下の共有の目印の規則に当てる）。
+                    // 「Sharing Indicator」（共有の枠）は、ウィンドウ単位の共有では通常の階層に出る（実機で確認）。
                     title_not_exact: TEAMS_TABS
                         .iter()
                         .chain(&["Microsoft Teams", "Sharing Indicator"])
@@ -208,7 +205,7 @@ pub fn builtin_rules() -> Vec<AppRule> {
                 WindowRule {
                     score: 40,
                     capture: false,
-                    // タイトル全体が一致するものだけ（会議名に同じ語を含む会議ウィンドウと取り違えない）。
+                    // 会議名に同じ語を含む会議ウィンドウと取り違えないよう、全体の一致で見る。
                     title_exact: s(&["Sharing Indicator"]),
                     any_layer: true,
                     sharing: true,
