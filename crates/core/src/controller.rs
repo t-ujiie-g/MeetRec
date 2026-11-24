@@ -483,6 +483,7 @@ impl Controller {
                     screen: false,
                     screen_failed: false,
                     screen_mark: None,
+                    screen_reselect_failures: 0,
                     joined_since: None,
                     output_settled: !req.unmute_output,
                     last_windows: String::new(),

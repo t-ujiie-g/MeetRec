@@ -558,21 +558,29 @@ fn shared_display_follows_the_frame_around_the_shared_window() {
     // 共有しているウィンドウを別のディスプレイへ動かした：選び直す。
     let mut moved = frame;
     (moved.x, moved.y) = (0, 34);
-    h.p.windows = vec![hidden, float.clone(), status, moved];
+    h.p.windows = vec![hidden.clone(), float.clone(), status, moved];
     h.tick();
     assert_eq!(h.count("screen 14"), 2);
     // 画面を録っている間はビデオパネルへ張り替えない。
     assert_eq!(h.count("retarget"), 0);
-    // 選び直せなくても（OS 層は今の画面を続ける）、ウィンドウの録画には戻さない。
-    h.p.screen_ok = false;
-    let mut moved_again = layered(14, "Annotation - Zoom", 1920, 1040, 96, (0, -1040));
-    moved_again.minimized = false;
-    let mut hidden = meeting_win();
-    hidden.minimized = true;
-    h.p.windows = vec![hidden, float, moved_again];
+    // 枠が一時的に消えても、ツールバー類では選び直さない（枠で決めた画面を続ける）。
+    h.p.windows = vec![hidden.clone(), float.clone(), toolbar];
     h.ticks(3);
-    assert_eq!(h.count("screen 14"), 3);
+    assert_eq!(h.count("screen"), 3);
+    // 選び直しに失敗：次の確認でもう一度試す。3 回続いたら、共有していない画面を録り続けないよう、
+    // ウィンドウの録画に戻し、この録画ではもう画面に切り替えない。
+    h.p.screen_ok = false;
+    let back = layered(14, "Annotation - Zoom", 1920, 1040, 96, (0, -1040));
+    h.p.windows = vec![hidden, float, back];
+    h.ticks(2);
+    assert_eq!(h.count("screen 14"), 4);
     assert_eq!(h.count("retarget"), 0);
+    h.tick();
+    assert_eq!(h.count("screen 14"), 5);
+    assert_eq!(h.count("retarget 5"), 1);
+    h.p.screen_ok = true;
+    h.ticks(3);
+    assert_eq!(h.count("screen 14"), 5);
     assert!(h.c.is_recording());
 }
 

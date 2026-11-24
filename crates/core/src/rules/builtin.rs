@@ -119,6 +119,7 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     title_any: s(&["Annotation - Zoom"]),
                     any_layer: true,
                     sharing: true,
+                    sharing_frame: true,
                     min_width: 200,
                     min_height: 200,
                     ..Default::default()
@@ -208,6 +209,7 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     title_any: s(&["Sharing Indicator"]),
                     any_layer: true,
                     sharing: true,
+                    sharing_frame: true,
                     ..Default::default()
                 },
                 // Windows：自分が画面共有している間、共有している画面を囲む枠（タイトルは空。実機のログで確認）。
@@ -216,6 +218,7 @@ pub fn builtin_rules() -> Vec<AppRule> {
                     capture: false,
                     class_any: s(&["ScreenBorderWindow"]),
                     sharing: true,
+                    sharing_frame: true,
                     ..Default::default()
                 },
                 // フォールバック：Teams の任意のウィンドウ。

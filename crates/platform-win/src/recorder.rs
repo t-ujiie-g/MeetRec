@@ -2,7 +2,7 @@
 //! 音声スレッド（プロセスループバック・マイク）からデータを流し込む。
 
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -64,8 +64,6 @@ pub struct Recorder {
     video: Option<Arc<VideoShared>>,
     workers: Vec<Worker>,
     root_pid: u32,
-    /// 画面を録っているときの、そのモニター（HMONITOR。録っていなければ 0）。同じモニターへの張り替えを省く。
-    screen_monitor: AtomicIsize,
     /// 以後、出力機器の音量を 0 に戻さない（録音スレッドが読む。D37）。
     output_settled: Arc<AtomicBool>,
 }
@@ -162,14 +160,12 @@ impl Recorder {
             video: video_shared,
             workers,
             root_pid,
-            screen_monitor: AtomicIsize::new(0),
             output_settled,
         })
     }
 
     pub fn retarget(&self, window: &WindowInfo) {
         if let Some(v) = &self.video {
-            self.screen_monitor.store(0, Ordering::SeqCst);
             v.retarget(Some(Target::Window(window.id as isize)));
         }
     }
@@ -188,11 +184,7 @@ impl Recorder {
             meetrec_core::warn!("共有しているモニターを特定できません");
             return false;
         }
-        // すでに同じモニターを録っていれば、張り替えない（共有の目印が動いただけ）。
-        let monitor = monitor.0 as isize;
-        if self.screen_monitor.swap(monitor, Ordering::SeqCst) != monitor {
-            v.retarget(Some(Target::Monitor(monitor)));
-        }
+        v.retarget(Some(Target::Monitor(monitor.0 as isize)));
         true
     }
 
@@ -209,7 +201,6 @@ impl Recorder {
     /// 画面の録画をやめる（張り替え先のウィンドウがないとき）。
     pub fn hide_screen(&self) {
         if let Some(v) = &self.video {
-            self.screen_monitor.store(0, Ordering::SeqCst);
             v.retarget(None);
         }
     }

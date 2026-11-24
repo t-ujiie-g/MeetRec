@@ -10,6 +10,9 @@ const RETARGET_HOLD_NS: u64 = 2 * NS;
 /// 会議に入ったと分かってから、出力機器の音量を触らなくするまでの待ち（D37）。会議アプリが参加時に音量を上げるのは
 /// 入った瞬間だが、こちらが気づくのは次の確認（2 秒おき）なので、行き違わないよう少し長く取る。
 const OUTPUT_SETTLE_NS: u64 = 10 * NS;
+/// 共有しているディスプレイを選び直せないことが、この回数続いたら、画面の録画をやめてウィンドウの録画に戻す
+/// （今録っている画面が、もう共有している画面ではないおそれがあるため）。
+const SCREEN_RESELECT_MAX_FAILURES: u8 = 3;
 
 /// 会議アプリのウィンドウ構成を 1 行にまとめる（ログ用）。
 fn window_summary(obs: &Observation, app: usize) -> String {
@@ -76,8 +79,10 @@ pub(super) struct Rec {
     pub(super) screen: bool,
     /// 画面への切り替えに失敗した（この録画では再試行せず、ウィンドウの録画を続ける）。
     pub(super) screen_failed: bool,
-    /// 画面を選ぶのに使った、共有の目印の（識別子・位置・大きさ）。変わったら、ディスプレイを選び直す。
-    pub(super) screen_mark: Option<(u64, i32, i32, u32, u32)>,
+    /// 画面を選ぶのに使った、共有の目印の（枠かどうか・識別子・位置・大きさ）。変わったら、ディスプレイを選び直す。
+    pub(super) screen_mark: Option<(bool, u64, i32, i32, u32, u32)>,
+    /// ディスプレイの選び直しに続けて失敗した回数。
+    pub(super) screen_reselect_failures: u8,
     /// 会議に入ったと分かった時刻（会議名の付いたウィンドウが見えた。参加前の画面には会議名が無い）。
     pub(super) joined_since: Option<u64>,
     /// 出力機器の音量にもう触らないと OS 層に伝えた（出力機器に触らない録画では最初から true）。
@@ -139,8 +144,10 @@ impl Rec {
             .filter(|_| enabled && !self.screen_failed);
         let geometry = |w: &ScoredWindow| {
             let i = &w.info;
-            (i.id, i.x, i.y, i.width, i.height)
+            (w.frame, i.id, i.x, i.y, i.width, i.height)
         };
+        // 枠で決めたあとは、枠より不確かな目印（ツールバーの類）では選び直さない（枠が一時的に消えたときなど）。
+        let chosen_by_frame = self.screen_mark.is_some_and(|m| m.0);
         match sharing {
             Some(mark) if !self.screen => {
                 if p.retarget_screen(&mark.info) {
@@ -150,6 +157,7 @@ impl Rec {
                     );
                     self.screen = true;
                     self.screen_mark = Some(geometry(mark));
+                    self.screen_reselect_failures = 0;
                     self.candidate = None;
                 } else {
                     self.screen_failed = true;
@@ -157,12 +165,28 @@ impl Rec {
             }
             // 共有の目印が動いた・より確かな目印が現れた：共有しているディスプレイを選び直す。
             // 共有の始まりは、目印がまだ別のディスプレイにあることがある。OS 層は、同じディスプレイなら何もしない。
-            Some(mark) if self.screen_mark != Some(geometry(mark)) => {
-                self.screen_mark = Some(geometry(mark));
-                if !p.retarget_screen(&mark.info) {
-                    crate::info!(
-                        "共有の目印が動いたが、ディスプレイを選び直せないので今の画面を続ける"
-                    );
+            Some(mark)
+                if self.screen_mark != Some(geometry(mark)) && (mark.frame || !chosen_by_frame) =>
+            {
+                if p.retarget_screen(&mark.info) {
+                    self.screen_mark = Some(geometry(mark));
+                    self.screen_reselect_failures = 0;
+                } else {
+                    // 覚え直さないので、次の確認でもう一度試す。続けて失敗したら、共有していない画面を
+                    // 録り続けないよう、この録画では画面の録画をやめる。
+                    self.screen_reselect_failures += 1;
+                    if self.screen_reselect_failures >= SCREEN_RESELECT_MAX_FAILURES {
+                        crate::warn!(
+                            "共有しているディスプレイを選び直せないので、ウィンドウの録画に戻します"
+                        );
+                        self.screen = false;
+                        self.screen_failed = true;
+                        self.screen_mark = None;
+                        match best {
+                            Some(b) => self.retarget(p, b),
+                            None => p.end_screen(),
+                        }
+                    }
                 }
             }
             None if self.screen => {

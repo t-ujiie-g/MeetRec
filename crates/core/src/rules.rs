@@ -38,6 +38,9 @@ pub struct WindowRule {
     /// 自分が画面共有している間だけ現れるウィンドウ（共有ツールバー等）。
     /// 映っていれば「共有中」とみなし、共有している画面の録画に切り替える（D31）。
     pub sharing: bool,
+    /// `sharing` の目印のうち、共有している画面やウィンドウを囲む枠（共有しているディスプレイに必ずある）。
+    /// ツールバーの類（別のディスプレイに出ることがある）より優先して、録るディスプレイを決める。
+    pub sharing_frame: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -106,6 +109,8 @@ pub struct ScoredWindow {
     pub capture: bool,
     /// 自分が画面共有中であることを示すウィンドウ（`WindowRule::sharing`）。
     pub sharing: bool,
+    /// 共有しているもの（画面やウィンドウ）を囲む枠（`WindowRule::sharing_frame`）。
+    pub frame: bool,
     /// 会議ウィンドウ（またはその代わり）と言い切れるウィンドウ。受け皿の規則
     /// （`WindowRule::fallback`）にしか一致しなかったものは false。
     pub definite: bool,
@@ -150,16 +155,18 @@ impl Observation {
     }
 
     /// 自分が画面共有中なら、その目印になるウィンドウ（映っているもの）を返す。
-    /// 目印が複数あれば、いちばん大きいものを選ぶ：共有している画面やウィンドウを囲む枠は、共有しているディスプレイに
-    /// あるが、ツールバーの類は別のディスプレイに出ることがある（共有していない画面を録らないため）。
+    /// 目印が複数あれば、共有しているものを囲む枠（`frame`）を優先し、その中でいちばん大きいものを選ぶ：
+    /// 枠は共有しているディスプレイにあるが、ツールバーの類は別のディスプレイに出ることがある
+    /// （共有していない画面を録らないため）。
     pub fn sharing_window(&self, app: usize) -> Option<&ScoredWindow> {
-        let area = |w: &&ScoredWindow| u64::from(w.info.width) * u64::from(w.info.height);
+        let rank =
+            |w: &&ScoredWindow| (w.frame, u64::from(w.info.width) * u64::from(w.info.height));
         self.windows
             .iter()
             .filter(|w| w.app == app && w.sharing && !w.info.minimized)
-            // 同じ大きさなら、先に並んでいるほう（`max_by_key` は最後を返すので逆順にする）。
+            // 同じ順位なら、先に並んでいるほう（`max_by_key` は最後を返すので逆順にする）。
             .rev()
-            .max_by_key(area)
+            .max_by_key(rank)
     }
 
     pub fn max_score(&self, app: usize) -> Option<i32> {
@@ -307,6 +314,7 @@ impl Rules {
                     score: rule.score,
                     capture: rule.capture,
                     sharing: rule.sharing,
+                    frame: rule.sharing && rule.sharing_frame,
                     definite: !rule.fallback,
                     info: w.clone(),
                 }),
