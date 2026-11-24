@@ -564,9 +564,12 @@ fn shared_display_follows_the_frame_around_the_shared_window() {
     // 画面を録っている間はビデオパネルへ張り替えない。
     assert_eq!(h.count("retarget"), 0);
     // 枠が一時的に消えても、ツールバー類では選び直さない（枠で決めた画面を続ける）。
-    h.p.windows = vec![hidden.clone(), float.clone(), toolbar];
-    h.ticks(3);
+    h.p.windows = vec![hidden.clone(), float.clone(), toolbar.clone()];
+    h.ticks(4);
     assert_eq!(h.count("screen"), 3);
+    // 枠が見えないままの状態が続いたら（10 秒）、残っている目印で選び直す（古い画面を録り続けない）。
+    h.tick();
+    assert_eq!(h.count("screen 12"), 2);
     // 選び直しに失敗：次の確認でもう一度試す。3 回続いたら、共有していない画面を録り続けないよう、
     // ウィンドウの録画に戻し、この録画ではもう画面に切り替えない。
     h.p.screen_ok = false;

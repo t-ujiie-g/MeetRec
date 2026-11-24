@@ -484,6 +484,7 @@ impl Controller {
                     screen_failed: false,
                     screen_mark: None,
                     screen_reselect_failures: 0,
+                    frame_missing: 0,
                     joined_since: None,
                     output_settled: !req.unmute_output,
                     last_windows: String::new(),

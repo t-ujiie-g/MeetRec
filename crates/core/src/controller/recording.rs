@@ -13,6 +13,9 @@ const OUTPUT_SETTLE_NS: u64 = 10 * NS;
 /// 共有しているディスプレイを選び直せないことが、この回数続いたら、画面の録画をやめてウィンドウの録画に戻す
 /// （今録っている画面が、もう共有している画面ではないおそれがあるため）。
 const SCREEN_RESELECT_MAX_FAILURES: u8 = 3;
+/// 枠で画面を決めたあと、枠が見えない確認がこの回数続いたら、ツールバーの類での選び直しを許す
+/// （枠が出なくなったまま、共有しているものが別のディスプレイへ移ったときに、古い画面を録り続けないため）。
+const FRAME_MISSING_MAX: u8 = 5;
 
 /// 会議アプリのウィンドウ構成を 1 行にまとめる（ログ用）。
 fn window_summary(obs: &Observation, app: usize) -> String {
@@ -81,6 +84,8 @@ pub(super) struct Rec {
     pub(super) screen_failed: bool,
     /// 画面を選ぶのに使った、共有の目印の（枠かどうか・識別子・位置・大きさ）。変わったら、ディスプレイを選び直す。
     pub(super) screen_mark: Option<(bool, u64, i32, i32, u32, u32)>,
+    /// 枠で画面を決めたあと、枠が見えない確認が続いた回数。
+    pub(super) frame_missing: u8,
     /// ディスプレイの選び直しに続けて失敗した回数。
     pub(super) screen_reselect_failures: u8,
     /// 会議に入ったと分かった時刻（会議名の付いたウィンドウが見えた。参加前の画面には会議名が無い）。
@@ -147,7 +152,13 @@ impl Rec {
             (w.frame, i.id, i.x, i.y, i.width, i.height)
         };
         // 枠で決めたあとは、枠より不確かな目印（ツールバーの類）では選び直さない（枠が一時的に消えたときなど）。
-        let chosen_by_frame = self.screen_mark.is_some_and(|m| m.0);
+        // 枠が見えないままの状態が続いたら、この優先をやめる。
+        self.frame_missing = match sharing {
+            Some(mark) if self.screen && !mark.frame => self.frame_missing.saturating_add(1),
+            _ => 0,
+        };
+        let chosen_by_frame =
+            self.screen_mark.is_some_and(|m| m.0) && self.frame_missing < FRAME_MISSING_MAX;
         match sharing {
             Some(mark) if !self.screen => {
                 if p.retarget_screen(&mark.info) {
